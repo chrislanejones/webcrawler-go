@@ -1,0 +1,30 @@
+# Go build files
+bin/
+*.exe
+*.test
+*.out
+
+# Go workspace files
+go.sum
+vendor/
+
+# Build and IDE tools
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Logs and temp files
+*.log
+*.tmp
+*.bak
+
+# Webcrawler temp and output
+assets/tmp/
+results.csv
+
+# OS-generated
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
