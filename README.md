@@ -23,8 +23,8 @@ A Go web crawler that recursively scans all HTML, PDF, and DOCX pages on a websi
 Edit `config.yaml`:
 
 ```yaml
-startURL: "https://commonwealth.virginia.gov"
-targetLink: "https://soc-notary-court.azurewebsites.net"
+startURL: "https://www.icann.org"
+targetLink: "https://gnso.icann.org/en/council/policy/new-gtlds"
 maxConcurrency: 5
 ```
 
