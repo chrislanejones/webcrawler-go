@@ -1,3 +1,7 @@
-startURL: "https://www.icann.org"
-targetLink: "https://gnso.icann.org/en/council/policy/new-gtlds"
+# Multiple start URLs (comma-separated)
+startURLs: "https://www.icann.org,https://www.iana.org,https://root-servers.org"
+
+# Multiple target links to search for (comma-separated)
+targetLinks: "https://gnso.icann.org/en/council/policy/new-gtlds,https://www.icann.org/resources/pages/gtlds,https://newgtlds.icann.org"
+
 maxConcurrency: 5
