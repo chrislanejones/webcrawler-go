@@ -1,216 +1,347 @@
-# Webcrawler
+# 🕷️ Web Crawler - Cloudflare Buster Edition
 
-A Go web crawler that recursively scans multiple websites for multiple target links or strings across HTML, PDF, and DOCX pages.
+![Golang Web Crawler Banner with Spider](Golang-Web-Crawler-Banner.jpg)
+A powerful Go-based web crawler with an interactive terminal wizard interface. Features intelligent Cloudflare bypass strategies, comprehensive statistics, and support for HTML, PDF, and DOCX content scanning.
 
----
-
-## 🚨 Error Detection & Troubleshooting
-
-The crawler provides detailed error analysis and suggestions for common issues:
-
-### **Initial Connection Testing**
-
-Before starting operations, the crawler tests connectivity to all start URLs:
-
-- ✅ **OK** - Website is accessible
-- 🚫 **BLOCKED (403)** - Website is blocking automated requests
-- 📄 **NOT FOUND (404)** - Main page doesn't exist
-- 🐌 **RATE LIMITED (429)** - Too many requests
-- 🔥 **SERVER ERROR (5xx)** - Website internal problems
-
-### **Bot Protection Detection**
-
-The crawler automatically identifies major anti-bot systems:
-
-- 🛡️ **Cloudflare Bot Management** - "Checking your browser..." pages
-- 🛡️ **Incapsula/Imperva** - Enterprise bot protection
-- 🛡️ **PerimeterX** - Advanced bot detection
-- 🛡️ **Sucuri Security** - WordPress security plugin
-- 🛡️ **CAPTCHA Challenge** - Manual verification required
-- 🛡️ **Generic Anti-Bot System** - Other protection mechanisms
-
-### **Network Error Categories**
-
-- ⏱️ **TIMEOUT** - Server not responding (may be overloaded or blocking)
-- 🚫 **CONNECTION REFUSED** - Server actively refusing connections
-- 🌐 **DNS ERROR** - Domain name not found or DNS resolution failed
-- 🔒 **SSL/TLS ERROR** - Certificate validation failed
-
-### **Status Code Explanations**
-
-- **403 Forbidden** - Bot detection or access restrictions
-- **404 Not Found** - Page doesn't exist
-- **429 Rate Limited** - Too many requests (reduce `maxConcurrency`)
-- **503 Service Unavailable** - Server temporarily down or overloaded
-
-### **Summary Statistics**
-
-Each operation shows:
-
-- **Total checked** - Number of pages crawled
-- **Matches** - Target links/strings found
-- **Errors** - Network errors, 404s, timeouts, etc.
-- **Blocked** - Pages blocked by anti-bot protection
+![Go Version](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat&logo=go)
+![License](https://img.shields.io/badge/License-MIT-green.svg)
 
 ---
 
-## 🛠 Features
+## ✨ Features
 
-- ✅ **Multiple start URLs** - Crawl several websites in sequence
-- ✅ **Multiple target links** - Search for multiple links/strings per website
-- ✅ **Enhanced error detection** - Detailed analysis of connection issues and bot blocking
-- ✅ **Initial connectivity testing** - Pre-flight checks for all start URLs
-- ✅ **Bot protection detection** - Identifies Cloudflare, Incapsula, and other anti-bot systems
-- ✅ Recursive crawling of internal links
-- ✅ HTML body text scanning
-- ✅ PDF text extraction (via external `pdfcpu` CLI)
-- ✅ DOCX text scanning using `gooxml`
-- ✅ Individual CSV reporting for each operation
-- ✅ TLS certificate validation skipped (for sites with self-signed or untrusted certs)
-- ✅ Ignores `mailto:`, `tel:`, and non-HTTP links
-- ✅ Progress tracking with operation numbers
-- ✅ Supports `--verbose` and `--quiet` flags
+### 🎯 Four Powerful Search Modes
 
----
+| Mode                     | Description                                                                |
+| ------------------------ | -------------------------------------------------------------------------- |
+| **🔗 Find Link**         | Search for specific URLs/links across HTML pages, PDFs, and Word documents |
+| **📝 Find Word/Phrase**  | Search for any text string across all supported content types              |
+| **💔 Broken Link Check** | Scan entire site for 404s, timeouts, and connection errors                 |
+| **🖼️ Oversized Images**  | Find images exceeding a specified file size threshold                      |
 
-## 🔧 Configuration
+### 🛡️ Cloudflare Bypass Strategies
 
-Edit `config.yaml`:
+The crawler employs multiple techniques to handle bot protection:
 
-```yaml
-# Multiple start URLs (comma-separated)
-startURLs: "https://www.icann.org,https://www.iana.org,https://root-servers.org"
+- **Alternative Entry Points**: Automatically tests 17+ common pages (`/about`, `/contact`, `/sitemap.xml`, etc.) when the main page is blocked
+- **Custom Entry Point**: Specify your own "back door" URL
+- **Multi-Phase Crawling**: Start from working pages, then retry blocked pages with established session cookies
+- **User Agent Rotation**: Cycles through 5 different browser signatures
+- **Session Persistence**: Maintains cookies across requests
+- **Exponential Backoff**: Smart retry delays to avoid rate limiting
 
-# Multiple target links to search for (comma-separated)
-targetLinks: "https://gnso.icann.org/en/council/policy/new-gtlds,https://www.icann.org/resources/pages/gtlds,https://newgtlds.icann.org"
+### 📊 Comprehensive Statistics
 
-maxConcurrency: 5
-```
+Real-time and final statistics include:
 
-**Configuration Options:**
-
-- `startURLs`: Comma-separated list of websites to crawl
-- `targetLinks`: Comma-separated list of links or text strings to search for
-- `maxConcurrency`: Number of concurrent fetches per operation
+- Pages checked, matches found, errors, blocked pages
+- Content breakdown (HTML, PDF, DOCX, images, links)
+- Network stats (bytes downloaded, retries, blocked count)
+- HTTP status code distribution (2xx, 3xx, 4xx, 5xx)
+- Connection error categorization (timeouts, DNS, SSL, refused)
+- Performance metrics (pages/second, avg download speed, avg page size)
+- Cloudflare bypass stats (retried, recovered, still blocked, recovery rate)
 
 ---
 
-## 🚀 Usage
+## 🚀 Quick Start
 
-Run the crawler:
+### Prerequisites
+
+- Go 1.21 or higher
+- `pdfcpu` CLI tool (for PDF text extraction)
+
+### Installation
 
 ```bash
-go run main.go [--verbose] [--quiet]
+# Clone or download the project
+git clone <repository-url>
+cd webcrawler
+
+# Install dependencies
+go mod tidy
+
+# Install pdfcpu for PDF support
+go install github.com/pdfcpu/pdfcpu/cmd/pdfcpu@latest
+export PATH=$PATH:$(go env GOPATH)/bin
 ```
 
-**Flags:**
+### Running
 
-- `--verbose`: Show every match found and detailed progress
-- `--quiet`: Suppress all output except errors and final summaries
+```bash
+go run main.go
+```
 
-**Example Output:**
+The interactive wizard will guide you through the configuration.
+
+---
+
+## 📖 Usage Guide
+
+### Step-by-Step Wizard
 
 ```
-🚀 Starting webcrawler with 3 website(s) and 3 target link(s)
-📊 Total operations: 9
+╔═══════════════════════════════════════════════════════════════════╗
+║                   🕷️  Web Crawler Wizard  🕷️                       ║
+║                        v2.1 - Cloudflare Buster                   ║
+╚═══════════════════════════════════════════════════════════════════╝
 
-🔍 Testing initial connections...
-Testing 1/3: https://www.icann.org ✅ OK
-Testing 2/3: https://www.iana.org ✅ OK
-Testing 3/3: https://blocked-site.com 🚫 BLOCKED (403 Forbidden)
-   Issue: The website is blocking automated requests
+🌐 What site do you want to check?
+   → example.com
 
-🚀 Starting crawl operations...
+🔍 Testing connection to https://example.com...
+   🔄 Attempt 1/3 ✅ OK (200) - 245ms latency
 
-🌐 Processing website 1 of 3: https://www.icann.org
-================================================================================
-🔍 Operation 1 of 9: Searching for target 1 of 3
-🎯 Target: https://gnso.icann.org/en/council/policy/new-gtlds
-------------------------------------------------------------
-🔍 [Op 1] Checking: https://www.icann.org
-🤖 [Op 1] BOT PROTECTION DETECTED: https://www.icann.org/protected-page
-   🛡️  Protection Type: Cloudflare Bot Management
-   💡 This website requires manual verification or has strict bot policies
-   ⚠️  The crawler cannot bypass this protection automatically
-📄 [Op 1] PAGE NOT FOUND (404): https://www.icann.org/nonexistent-page - This page doesn't exist
-✅ Operation 1 completed (Website 1/3, Target 1/3)
-📊 Total checked: 45, Matches: 3, Errors: 2, Blocked: 1, Time: 2m15s
-⚠️  Warning: 1 pages were blocked by anti-bot protection
-⚠️  Warning: 2 pages had errors (timeouts, 404s, etc.)
+📋 What should I check the site for?
+
+   ┌─────────────────────────────────────────────────────────┐
+   │  1. 🔗 Find a link on site (HTML, Word, PDF)            │
+   │  2. 📝 Find a word/phrase on site (HTML, Word, PDF)     │
+   │  3. 💔 Search for broken links                          │
+   │  4. 🖼️  Search for oversized images                      │
+   └─────────────────────────────────────────────────────────┘
+
+   Enter choice (1-4): 2
+
+📝 Enter the word or phrase to search for:
+   → privacy policy
+
+⚡ Max concurrent requests (default 5, max 20): 10
+
+🔄 Max retries per page (default 3): 3
+```
+
+### Handling Cloudflare Protection
+
+When Cloudflare blocks the main page:
+
+```
+🔍 Testing connection to https://protected-site.com...
+   🔄 Attempt 1/3 🛡️  CLOUDFLARE DETECTED (403)
+   ⏳ Waiting 3s before retry with different headers...
+   🔄 Attempt 2/3 🛡️  CLOUDFLARE DETECTED (403)
+   ⏳ Waiting 6s before retry with different headers...
+   🔄 Attempt 3/3 🛡️  CLOUDFLARE DETECTED (403)
+
+   🛡️  Cloudflare/Bot protection detected on main page!
+   💡 Let's try some alternative entry points...
+
+   Testing common entry points...
+
+   [ 1/17] Testing /about                ✅ WORKS!
+   [ 2/17] Testing /about-us             ❌ Failed
+   [ 3/17] Testing /contact              ✅ WORKS!
+   [ 4/17] Testing /contact-us           🛡️  Blocked
+   ...
+
+   ✅ Found 2 working entry point(s)!
+   🔄 Will start from these and retry blocked pages later
+```
+
+---
+
+## 📊 Output
+
+### Live Statistics
+
+During crawling, you'll see real-time updates:
+
+```
+📊 [2m 15s] Pages: 142 | Matches: 8 | Errors: 3 | Blocked: 2 (Queue: 1, Recovered: 1) | 1.1 p/s | 45.2 KB/s
+```
+
+### Final Report
+
+```
+╔═══════════════════════════════════════════════════════════════════╗
+║                      📊 FINAL STATISTICS 📊                       ║
+╠═══════════════════════════════════════════════════════════════════╣
+║                                                                   ║
+║  ⏱️  Total Time:           5m 32s                                  ║
+║  📄 Pages Checked:         347                                    ║
+║  ✅ Matches Found:         23                                     ║
+║  📁 Results File:          results-search-2024-01-15_14-30-00.csv ║
+║                                                                   ║
+╠═══════════════════════════════════════════════════════════════════╣
+║                      🔬 CONTENT BREAKDOWN                         ║
+╠═══════════════════════════════════════════════════════════════════╣
+║  📝 HTML Pages:            312                                    ║
+║  📕 PDF Documents:         28                                     ║
+║  📘 Word Documents:        7                                      ║
+║  🖼️  Images Checked:        0                                      ║
+║  🔗 Links Checked:         0                                      ║
+║  ⏭️  Skipped (External):    156                                    ║
 ...
 ```
 
----
+### CSV Results
 
-## 📦 Dependencies
+Results are saved to timestamped CSV files:
 
-Install the required Go modules:
+**Search Mode:**
 
-```bash
-go mod tidy
+```csv
+URL,ContentType,FoundIn,Target,Timestamp
+https://example.com/page1,text/html,HTML,privacy policy,2024-01-15T14:32:45Z
+https://example.com/docs/terms.pdf,application/pdf,PDF,privacy policy,2024-01-15T14:33:12Z
 ```
 
-Install the `pdfcpu` CLI (used to extract PDF text):
+**Broken Links Mode:**
+
+```csv
+BrokenURL,FoundOnPage,StatusCode,Error,Timestamp
+https://example.com/old-page,https://example.com/links,404,Not Found,2024-01-15T14:32:45Z
+```
+
+**Oversized Images Mode:**
+
+```csv
+ImageURL,FoundOnPage,SizeKB,ContentType,Timestamp
+https://example.com/hero.jpg,https://example.com/,2048,image/jpeg,2024-01-15T14:32:45Z
+```
+
+---
+
+## ⚙️ Configuration Options
+
+| Option               | Default | Description                                          |
+| -------------------- | ------- | ---------------------------------------------------- |
+| Concurrency          | 5       | Number of concurrent requests (max 20)               |
+| Max Retries          | 3       | Retry attempts per page on failure                   |
+| Retry Delay          | 2s      | Base delay between retries (increases exponentially) |
+| Blocked Retry Passes | 3       | Number of passes to retry blocked pages              |
+| Image Size Threshold | 500KB   | Threshold for oversized image detection              |
+
+---
+
+## 🚨 Error Detection
+
+### Network Errors
+
+| Icon | Error Type         | Description                          |
+| ---- | ------------------ | ------------------------------------ |
+| ⏱️   | Timeout            | Server not responding                |
+| 🚫   | Connection Refused | Server actively refusing connections |
+| 🌐   | DNS Error          | Domain not found                     |
+| 🔒   | SSL/TLS Error      | Certificate validation failed        |
+
+### HTTP Status Codes
+
+| Code    | Handling                                   |
+| ------- | ------------------------------------------ |
+| 200-299 | Success - content processed                |
+| 300-399 | Redirects followed (up to 10)              |
+| 403/503 | Bot protection detected - queued for retry |
+| 429     | Rate limited - backed off and retried      |
+| 404     | Not found - logged as error                |
+| 5xx     | Server error - retried                     |
+
+### Bot Protection Detection
+
+Automatically identifies:
+
+- Cloudflare ("Checking your browser...", "Ray ID")
+- Incapsula/Imperva
+- PerimeterX
+- Sucuri
+- Generic CAPTCHA challenges
+- DDoS protection pages
+
+---
+
+## 📁 Project Structure
+
+```
+webcrawler/
+├── main.go                      # Interactive wizard & entry point
+├── go.mod                       # Go module definition
+├── go.sum                       # Dependency checksums
+├── assets/
+│   └── tmp/                     # Temporary files for PDF processing
+└── internal/
+    ├── crawler/
+    │   └── crawler.go           # Core crawling logic & statistics
+    └── parser/
+        ├── docx.go              # Word document parser
+        └── pdf.go               # PDF text extractor
+```
+
+---
+
+## 🔧 Troubleshooting
+
+### "pdfcpu: command not found"
 
 ```bash
 go install github.com/pdfcpu/pdfcpu/cmd/pdfcpu@latest
 export PATH=$PATH:$(go env GOPATH)/bin
 ```
 
+### High blocked page count
+
+- Reduce concurrency: `⚡ Max concurrent requests: 3`
+- Increase retry count
+- Try running at a different time
+- Some sites genuinely require JavaScript execution
+
+### Rate limiting (429 errors)
+
+The crawler automatically backs off, but you can:
+
+- Reduce concurrency
+- Increase the built-in delay (edit `time.Sleep(50 * time.Millisecond)` in `crawler.go`)
+
+### SSL certificate errors
+
+The crawler skips certificate verification by default (`InsecureSkipVerify: true`). This handles self-signed certs but be aware of the security implications.
+
 ---
 
-## 📁 Output
+## 🛠️ Building
 
-Results are saved to individual CSV files for each operation:
+```bash
+# Build for current platform
+go build -o webcrawler main.go
 
-- `results-operation-1-website-1-target-1.csv`
-- `results-operation-2-website-1-target-2.csv`
-- `results-operation-3-website-1-target-3.csv`
-- ... and so on
+# Cross-compile for Linux
+GOOS=linux GOARCH=amd64 go build -o webcrawler-linux main.go
 
-**CSV Structure:**
+# Cross-compile for Windows
+GOOS=windows GOARCH=amd64 go build -o webcrawler.exe main.go
 
-```csv
-URL,ContentType,FoundIn,TargetLink,StartURL,OperationIndex
-https://example.com/page1,text/html,HTML,https://target.com,https://www.icann.org,1
-https://example.com/file.pdf,application/pdf,PDF,https://target.com,https://www.icann.org,1
+# Cross-compile for macOS
+GOOS=darwin GOARCH=amd64 go build -o webcrawler-mac main.go
 ```
 
-**CSV Columns:**
+---
 
-- `URL`: The page where the target was found
-- `ContentType`: MIME type of the content
-- `FoundIn`: Type of content (HTML, PDF, DOCX)
-- `TargetLink`: The target link/string that was found
-- `StartURL`: The website that was being crawled
-- `OperationIndex`: Sequential operation number
+## 📝 Dependencies
+
+- [golang.org/x/net](https://pkg.go.dev/golang.org/x/net) - HTML parsing
+- [baliance.com/gooxml](https://github.com/baliance/gooxml) - DOCX parsing
+- [pdfcpu](https://github.com/pdfcpu/pdfcpu) - PDF text extraction (external CLI)
 
 ---
 
-## ⚠️ Notes
+## ⚠️ Legal & Ethical Considerations
 
-- **Processing Order**: The crawler processes each start URL sequentially, searching for all target links on each website before moving to the next
-- **Total Operations**: If you have 3 start URLs and 3 target links, you'll have 9 total operations (3×3)
-- **File Organization**: Each operation creates its own result file for easy analysis
-- PDF extraction requires `pdfcpu` to be installed and available in your shell
-- DOCX extraction reads paragraph text only (not headers/footers/tables)
-- Crawling skips external domains and non-HTTP(S) links (`mailto:`, `tel:`, etc)
-- The `assets/tmp/` directory is used for temporary PDF processing files
+- Always respect `robots.txt` (manual check recommended)
+- Be mindful of rate limits and server load
+- Only crawl sites you have permission to access
+- This tool is for legitimate purposes like SEO auditing, content verification, and site maintenance
 
 ---
 
-## ✅ Tested With
+## 📄 License
 
-- Go 1.21+
-- Multiple websites with public HTML and document content
-- Self-signed or misconfigured HTTPS certificates
-- Large-scale operations (10+ websites × 10+ target links)
+MIT License - feel free to use, modify, and distribute.
 
 ---
 
-## 📊 Performance Tips
+## 🤝 Contributing
 
-- **Concurrency**: Adjust `maxConcurrency` based on your system and target websites' rate limits
-- **Target Specificity**: More specific target strings will reduce false positives
-- **Website Selection**: Ensure start URLs are the root domains you want to crawl
-- **Resource Usage**: Monitor system resources during large operations (many URLs × many targets)
+Contributions welcome! Please feel free to submit issues and pull requests.
+
+---
+
+**Made with ❤️ and Go**
