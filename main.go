@@ -89,12 +89,13 @@ func main() {
 	fmt.Println("   │  2. 📝 Find a word/phrase on site (HTML, Word, PDF)     │")
 	fmt.Println("   │  3. 💔 Search for broken links                          │")
 	fmt.Println("   │  4. 🖼️  Search for oversized images                      │")
+	fmt.Println("   │  5. 📄 Generate PDF for every page (with screenshots)   │")
 	fmt.Println("   └─────────────────────────────────────────────────────────┘")
 	fmt.Println()
 
 	var mode crawler.SearchMode
 	for {
-		fmt.Print("   Enter choice (1-4): ")
+		fmt.Print("   Enter choice (1-5): ")
 		input, err := reader.ReadString('\n')
 		if err != nil {
 			fmt.Println("❌ Error reading input:", err)
@@ -102,8 +103,8 @@ func main() {
 		}
 
 		choice, err := strconv.Atoi(strings.TrimSpace(input))
-		if err != nil || choice < 1 || choice > 4 {
-			fmt.Println("   ❌ Please enter a number between 1 and 4")
+		if err != nil || choice < 1 || choice > 5 {
+			fmt.Println("   ❌ Please enter a number between 1 and 5")
 			continue
 		}
 
@@ -149,6 +150,10 @@ func main() {
 			}
 		}
 		fmt.Printf("   Looking for images larger than %dKB\n", imageSizeThreshold)
+
+	case crawler.ModePDFCapture:
+		fmt.Println("📄 Will crawl site and generate PDF + screenshot for every page")
+		fmt.Println("   📁 Output folder: ./pdf_captures/")
 	}
 
 	fmt.Println()

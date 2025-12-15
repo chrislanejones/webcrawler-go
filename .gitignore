@@ -39,3 +39,6 @@ results-*.csv
 
 # Logs
 *.log
+
+# Exports
+pdf_captures*/

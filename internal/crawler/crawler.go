@@ -29,6 +29,7 @@ const (
 	ModeSearchWord
 	ModeBrokenLinks
 	ModeOversizedImages
+	ModePDFCapture
 )
 
 func (m SearchMode) String() string {
@@ -41,6 +42,8 @@ func (m SearchMode) String() string {
 		return "Broken Link Check"
 	case ModeOversizedImages:
 		return "Oversized Image Check"
+	case ModePDFCapture:
+		return "PDF Capture"
 	default:
 		return "Unknown"
 	}
@@ -167,6 +170,10 @@ func Start(cfg Config) {
 		resultFile = fmt.Sprintf("results-broken-links-%s.csv", timestamp)
 	case ModeOversizedImages:
 		resultFile = fmt.Sprintf("results-oversized-images-%s.csv", timestamp)
+	case ModePDFCapture:
+		// PDF capture uses its own output handling
+		StartPDFCapture(cfg)
+		return
 	}
 
 	createCSV()
