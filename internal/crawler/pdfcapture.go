@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -34,14 +35,15 @@ var (
 )
 
 var (
-	pdfVisited     sync.Map
-	pdfWg          sync.WaitGroup
-	pdfSema        chan struct{}
-	pdfStats       PDFCaptureStats
-	pdfStartTime   time.Time
-	pdfBaseURL     *url.URL
-	pdfOutputDir   string
-	pdfConcurrency int
+	pdfVisited      sync.Map
+	pdfWg           sync.WaitGroup
+	pdfSema         chan struct{}
+	pdfStats        PDFCaptureStats
+	pdfStartTime    time.Time
+	pdfBaseURL      *url.URL
+	pdfOutputDir    string
+	pdfConcurrency  int
+	pdfCaptureFormat CaptureFormat
 )
 
 // StartPDFCapture begins crawling and capturing PDFs/screenshots
@@ -50,7 +52,13 @@ func StartPDFCapture(cfg Config) {
 	pdfStats = PDFCaptureStats{}
 	pdfStartTime = time.Now()
 	pdfConcurrency = cfg.MaxConcurrency
+	pdfCaptureFormat = cfg.CaptureFormat
 	atomic.StoreInt32(&cancelRequested, 0)
+
+	// Default to both if not set
+	if pdfCaptureFormat == 0 {
+		pdfCaptureFormat = CaptureBoth
+	}
 
 	var err error
 	pdfBaseURL, err = url.Parse(cfg.StartURL)
@@ -61,7 +69,7 @@ func StartPDFCapture(cfg Config) {
 
 	// Create output directory with timestamp
 	timestamp := time.Now().Format("2006-01-02_15-04-05")
-	pdfOutputDir = fmt.Sprintf("pdf_captures_%s", timestamp)
+	pdfOutputDir = fmt.Sprintf("page_captures_%s", timestamp)
 	os.MkdirAll(pdfOutputDir, 0755)
 
 	pdfSema = make(chan struct{}, cfg.MaxConcurrency)
@@ -74,9 +82,13 @@ func StartPDFCapture(cfg Config) {
 	stopKeyListener := make(chan bool)
 	go listenForCancel(stopKeyListener)
 
-	fmt.Println("┌─────────────────── PDF CAPTURE STARTING ───────────────────┐")
+	// Determine format label
+	formatLabel := pdfCaptureFormat.String()
+
+	fmt.Println("┌─────────────────── PAGE CAPTURE STARTING ──────────────────┐")
 	fmt.Printf("│  🎯 Target: %-43s │\n", truncateString(cfg.StartURL, 43))
 	fmt.Printf("│  📁 Output: %-43s │\n", pdfOutputDir)
+	fmt.Printf("│  📋 Format: %-43s │\n", formatLabel)
 	fmt.Println("├────────────────────────────────────────────────────────────┤")
 	fmt.Println("│  💡 Press 'c' + Enter to cancel and save current progress  │")
 	fmt.Println("└────────────────────────────────────────────────────────────┘")
@@ -244,9 +256,30 @@ func capturePage(pageURL string) {
 	pdfPath := filepath.Join(pdfOutputDir, filename+".pdf")
 	pngPath := filepath.Join(pdfOutputDir, filename+".png")
 
-	// Check if already captured
-	if _, err := os.Stat(pdfPath); err == nil {
-		return
+	// Check if already captured based on format
+	switch pdfCaptureFormat {
+	case CapturePDFOnly:
+		if _, err := os.Stat(pdfPath); err == nil {
+			return
+		}
+	case CaptureImagesOnly:
+		if _, err := os.Stat(pngPath); err == nil {
+			return
+		}
+	case CaptureBoth:
+		if _, err := os.Stat(pdfPath); err == nil {
+			return
+		}
+	case CaptureCMYKPDF:
+		cmykPdfPath := filepath.Join(pdfOutputDir, filename+"_cmyk.pdf")
+		if _, err := os.Stat(cmykPdfPath); err == nil {
+			return
+		}
+	case CaptureCMYKTIFF:
+		tiffPath := filepath.Join(pdfOutputDir, filename+"_cmyk.tiff")
+		if _, err := os.Stat(tiffPath); err == nil {
+			return
+		}
 	}
 
 	// Create Chrome context with options for better rendering
@@ -274,18 +307,23 @@ func capturePage(pageURL string) {
 	var pdfBuf []byte
 	var pngBuf []byte
 
-	err := chromedp.Run(ctx,
+	// Build actions based on capture format
+	actions := []chromedp.Action{
 		// Navigate to page
 		chromedp.Navigate(pageURL),
-
 		// Wait for page to load
 		chromedp.WaitReady("body", chromedp.ByQuery),
-
 		// Wait a bit for any JS to finish
-		chromedp.Sleep(2*time.Second),
+		chromedp.Sleep(2 * time.Second),
+	}
 
-		// Take full-page screenshot at high quality
-		chromedp.ActionFunc(func(ctx context.Context) error {
+	// Add screenshot capture if needed
+	needsScreenshot := pdfCaptureFormat == CaptureImagesOnly || 
+		pdfCaptureFormat == CaptureBoth || 
+		pdfCaptureFormat == CaptureCMYKTIFF
+	
+	if needsScreenshot {
+		actions = append(actions, chromedp.ActionFunc(func(ctx context.Context) error {
 			// Get page dimensions
 			_, _, contentSize, _, _, _, err := page.GetLayoutMetrics().Do(ctx)
 			if err != nil {
@@ -315,10 +353,16 @@ func capturePage(pageURL string) {
 				WithFromSurface(true).
 				Do(ctx)
 			return err
-		}),
+		}))
+	}
 
-		// Generate PDF
-		chromedp.ActionFunc(func(ctx context.Context) error {
+	// Add PDF generation if needed
+	needsPDF := pdfCaptureFormat == CapturePDFOnly || 
+		pdfCaptureFormat == CaptureBoth || 
+		pdfCaptureFormat == CaptureCMYKPDF
+	
+	if needsPDF {
+		actions = append(actions, chromedp.ActionFunc(func(ctx context.Context) error {
 			var err error
 			pdfBuf, _, err = page.PrintToPDF().
 				WithPrintBackground(true).
@@ -331,8 +375,10 @@ func capturePage(pageURL string) {
 				WithMarginRight(0.4).
 				Do(ctx)
 			return err
-		}),
-	)
+		}))
+	}
+
+	err := chromedp.Run(ctx, actions...)
 
 	if err != nil {
 		atomic.AddInt64(&pdfStats.Errors, 1)
@@ -340,21 +386,79 @@ func capturePage(pageURL string) {
 		return
 	}
 
-	// Save PDF
-	if err := os.WriteFile(pdfPath, pdfBuf, 0644); err != nil {
-		atomic.AddInt64(&pdfStats.Errors, 1)
-		return
+	// Save PDF if generated
+	if pdfCaptureFormat == CapturePDFOnly || pdfCaptureFormat == CaptureBoth {
+		if err := os.WriteFile(pdfPath, pdfBuf, 0644); err != nil {
+			atomic.AddInt64(&pdfStats.Errors, 1)
+			return
+		}
+		atomic.AddInt64(&pdfStats.PDFsGenerated, 1)
 	}
-	atomic.AddInt64(&pdfStats.PDFsGenerated, 1)
 
-	// Save screenshot
-	if err := os.WriteFile(pngPath, pngBuf, 0644); err != nil {
-		atomic.AddInt64(&pdfStats.Errors, 1)
-		return
+	// Save and convert to CMYK PDF if needed
+	if pdfCaptureFormat == CaptureCMYKPDF {
+		// First save the RGB PDF temporarily
+		tempPdfPath := filepath.Join(pdfOutputDir, filename+"_temp.pdf")
+		if err := os.WriteFile(tempPdfPath, pdfBuf, 0644); err != nil {
+			atomic.AddInt64(&pdfStats.Errors, 1)
+			return
+		}
+		
+		// Convert to CMYK using Ghostscript
+		cmykPdfPath := filepath.Join(pdfOutputDir, filename+"_cmyk.pdf")
+		if err := convertToCMYKPDF(tempPdfPath, cmykPdfPath); err != nil {
+			atomic.AddInt64(&pdfStats.Errors, 1)
+			fmt.Printf("\n❌ CMYK conversion failed for %s: %v\n", truncateString(pageURL, 40), err)
+			os.Remove(tempPdfPath)
+			return
+		}
+		os.Remove(tempPdfPath) // Clean up temp file
+		atomic.AddInt64(&pdfStats.PDFsGenerated, 1)
 	}
-	atomic.AddInt64(&pdfStats.ScreenshotsGen, 1)
 
-	fmt.Printf("\n📄 Captured: %s\n", truncateString(pageURL, 60))
+	// Save screenshot if generated
+	if pdfCaptureFormat == CaptureImagesOnly || pdfCaptureFormat == CaptureBoth {
+		if err := os.WriteFile(pngPath, pngBuf, 0644); err != nil {
+			atomic.AddInt64(&pdfStats.Errors, 1)
+			return
+		}
+		atomic.AddInt64(&pdfStats.ScreenshotsGen, 1)
+	}
+
+	// Save and convert to CMYK TIFF if needed
+	if pdfCaptureFormat == CaptureCMYKTIFF {
+		// First save the PNG temporarily
+		tempPngPath := filepath.Join(pdfOutputDir, filename+"_temp.png")
+		if err := os.WriteFile(tempPngPath, pngBuf, 0644); err != nil {
+			atomic.AddInt64(&pdfStats.Errors, 1)
+			return
+		}
+		
+		// Convert to CMYK TIFF using ImageMagick
+		tiffPath := filepath.Join(pdfOutputDir, filename+"_cmyk.tiff")
+		if err := convertToCMYKTIFF(tempPngPath, tiffPath); err != nil {
+			atomic.AddInt64(&pdfStats.Errors, 1)
+			fmt.Printf("\n❌ CMYK TIFF conversion failed for %s: %v\n", truncateString(pageURL, 40), err)
+			os.Remove(tempPngPath)
+			return
+		}
+		os.Remove(tempPngPath) // Clean up temp file
+		atomic.AddInt64(&pdfStats.ScreenshotsGen, 1)
+	}
+
+	// Print appropriate message based on format
+	switch pdfCaptureFormat {
+	case CapturePDFOnly:
+		fmt.Printf("\n📑 Captured PDF: %s\n", truncateString(pageURL, 55))
+	case CaptureImagesOnly:
+		fmt.Printf("\n🖼️  Captured image: %s\n", truncateString(pageURL, 53))
+	case CaptureBoth:
+		fmt.Printf("\n📄 Captured: %s\n", truncateString(pageURL, 60))
+	case CaptureCMYKPDF:
+		fmt.Printf("\n🎨 Captured CMYK PDF: %s\n", truncateString(pageURL, 50))
+	case CaptureCMYKTIFF:
+		fmt.Printf("\n🎨 Captured CMYK TIFF: %s\n", truncateString(pageURL, 49))
+	}
 }
 
 func sanitizeFilename(urlStr string) string {
@@ -441,14 +545,50 @@ func printPDFLiveStats(stop chan bool) {
 
 			pagesPerSec := float64(visited) / elapsed.Seconds()
 
-			fmt.Printf("\r📊 [%s] Pages: %d | PDFs: %d | Screenshots: %d | Errors: %d | %.1f p/s     ",
-				formatDuration(elapsed),
-				visited,
-				pdfs,
-				screenshots,
-				errors,
-				pagesPerSec,
-			)
+			// Format stats based on capture mode
+			switch pdfCaptureFormat {
+			case CapturePDFOnly:
+				fmt.Printf("\r📊 [%s] Pages: %d | PDFs: %d | Errors: %d | %.1f p/s     ",
+					formatDuration(elapsed),
+					visited,
+					pdfs,
+					errors,
+					pagesPerSec,
+				)
+			case CaptureImagesOnly:
+				fmt.Printf("\r📊 [%s] Pages: %d | Images: %d | Errors: %d | %.1f p/s     ",
+					formatDuration(elapsed),
+					visited,
+					screenshots,
+					errors,
+					pagesPerSec,
+				)
+			case CaptureBoth:
+				fmt.Printf("\r📊 [%s] Pages: %d | PDFs: %d | Images: %d | Errors: %d | %.1f p/s     ",
+					formatDuration(elapsed),
+					visited,
+					pdfs,
+					screenshots,
+					errors,
+					pagesPerSec,
+				)
+			case CaptureCMYKPDF:
+				fmt.Printf("\r📊 [%s] Pages: %d | CMYK PDFs: %d | Errors: %d | %.1f p/s     ",
+					formatDuration(elapsed),
+					visited,
+					pdfs,
+					errors,
+					pagesPerSec,
+				)
+			case CaptureCMYKTIFF:
+				fmt.Printf("\r📊 [%s] Pages: %d | CMYK TIFFs: %d | Errors: %d | %.1f p/s     ",
+					formatDuration(elapsed),
+					visited,
+					screenshots,
+					errors,
+					pagesPerSec,
+				)
+			}
 		}
 	}
 }
@@ -461,16 +601,30 @@ func printPDFFinalStats() {
 	fmt.Println()
 	fmt.Println("╔═══════════════════════════════════════════════════════════════════╗")
 	if wasCancelled {
-		fmt.Println("║                 📊 PDF CAPTURE CANCELLED 📊                       ║")
+		fmt.Println("║                 📊 PAGE CAPTURE CANCELLED 📊                      ║")
 	} else {
-		fmt.Println("║                   📊 PDF CAPTURE COMPLETE 📊                      ║")
+		fmt.Println("║                  📊 PAGE CAPTURE COMPLETE 📊                      ║")
 	}
 	fmt.Println("╠═══════════════════════════════════════════════════════════════════╣")
 	fmt.Println("║                                                                   ║")
 	fmt.Printf("║  ⏱️  Total Time:           %-40s ║\n", formatDuration(elapsed))
 	fmt.Printf("║  📄 Pages Visited:         %-40d ║\n", pdfStats.PagesVisited)
-	fmt.Printf("║  📑 PDFs Generated:        %-40d ║\n", pdfStats.PDFsGenerated)
-	fmt.Printf("║  🖼️  Screenshots Generated: %-40d ║\n", pdfStats.ScreenshotsGen)
+
+	// Show stats based on capture format
+	switch pdfCaptureFormat {
+	case CapturePDFOnly:
+		fmt.Printf("║  📑 PDFs Generated:        %-40d ║\n", pdfStats.PDFsGenerated)
+	case CaptureImagesOnly:
+		fmt.Printf("║  🖼️  Images Generated:      %-40d ║\n", pdfStats.ScreenshotsGen)
+	case CaptureBoth:
+		fmt.Printf("║  📑 PDFs Generated:        %-40d ║\n", pdfStats.PDFsGenerated)
+		fmt.Printf("║  🖼️  Images Generated:      %-40d ║\n", pdfStats.ScreenshotsGen)
+	case CaptureCMYKPDF:
+		fmt.Printf("║  🎨 CMYK PDFs Generated:   %-40d ║\n", pdfStats.PDFsGenerated)
+	case CaptureCMYKTIFF:
+		fmt.Printf("║  🎨 CMYK TIFFs Generated:  %-40d ║\n", pdfStats.ScreenshotsGen)
+	}
+
 	fmt.Printf("║  ❌ Errors:                %-40d ║\n", pdfStats.Errors)
 	fmt.Printf("║  📁 Output Directory:      %-40s ║\n", pdfOutputDir)
 	fmt.Println("║                                                                   ║")
@@ -479,4 +633,65 @@ func printPDFFinalStats() {
 		fmt.Println("║                                                                   ║")
 	}
 	fmt.Println("╚═══════════════════════════════════════════════════════════════════╝")
+}
+
+// convertToCMYKPDF converts an RGB PDF to CMYK using Ghostscript
+func convertToCMYKPDF(inputPath, outputPath string) error {
+	// Check if Ghostscript is available
+	if _, err := exec.LookPath("gs"); err != nil {
+		return fmt.Errorf("ghostscript (gs) not found in PATH - install with: sudo apt install ghostscript")
+	}
+
+	cmd := exec.Command("gs",
+		"-dSAFER",
+		"-dBATCH",
+		"-dNOPAUSE",
+		"-dNOCACHE",
+		"-sDEVICE=pdfwrite",
+		"-sColorConversionStrategy=CMYK",
+		"-dProcessColorModel=/DeviceCMYK",
+		"-dAutoRotatePages=/None",
+		"-sOutputFile="+outputPath,
+		inputPath,
+	)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("ghostscript error: %v - %s", err, string(output))
+	}
+
+	return nil
+}
+
+// convertToCMYKTIFF converts a PNG to CMYK TIFF using ImageMagick
+func convertToCMYKTIFF(inputPath, outputPath string) error {
+	// Check if ImageMagick is available (try both 'convert' and 'magick')
+	var cmdName string
+	if _, err := exec.LookPath("magick"); err == nil {
+		cmdName = "magick"
+	} else if _, err := exec.LookPath("convert"); err == nil {
+		cmdName = "convert"
+	} else {
+		return fmt.Errorf("imagemagick not found in PATH - install with: sudo apt install imagemagick")
+	}
+
+	args := []string{
+		inputPath,
+		"-colorspace", "CMYK",
+		"-compress", "LZW",
+		outputPath,
+	}
+
+	// ImageMagick 7 uses 'magick convert', older versions just 'convert'
+	if cmdName == "magick" {
+		args = append([]string{"convert"}, args...)
+	}
+
+	cmd := exec.Command(cmdName, args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("imagemagick error: %v - %s", err, string(output))
+	}
+
+	return nil
 }

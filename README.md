@@ -10,7 +10,7 @@ A powerful Go-based web crawler with an interactive terminal wizard interface. F
 
 ## ✨ Features
 
-### 🎯 Four Powerful Search Modes
+### 🎯 Five Powerful Modes
 
 | Mode                     | Description                                                                |
 | ------------------------ | -------------------------------------------------------------------------- |
@@ -18,6 +18,17 @@ A powerful Go-based web crawler with an interactive terminal wizard interface. F
 | **📝 Find Word/Phrase**  | Search for any text string across all supported content types              |
 | **💔 Broken Link Check** | Scan entire site for 404s, timeouts, and connection errors                 |
 | **🖼️ Oversized Images**  | Find images exceeding a specified file size threshold                      |
+| **📄 Page Capture**      | Generate PDFs, screenshots, or CMYK files for every page on the site       |
+
+### 📄 Page Capture Options
+
+| Format                | Output          | Requirements         |
+| --------------------- | --------------- | -------------------- |
+| **PDF only**          | `.pdf`          | Chrome/Chromium      |
+| **Images only**       | `.png`          | Chrome/Chromium      |
+| **Both PDF + Images** | `.pdf` + `.png` | Chrome/Chromium      |
+| **CMYK PDF**          | `_cmyk.pdf`     | Chrome + Ghostscript |
+| **CMYK TIFF**         | `_cmyk.tiff`    | Chrome + ImageMagick |
 
 ### 🛡️ Cloudflare Bypass Strategies
 
@@ -50,6 +61,9 @@ Real-time and final statistics include:
 
 - Go 1.21 or higher
 - `pdfcpu` CLI tool (for PDF text extraction)
+- Chrome or Chromium (for page capture mode)
+- Ghostscript (optional, for CMYK PDF output)
+- ImageMagick (optional, for CMYK TIFF output)
 
 ### Installation
 
@@ -64,6 +78,19 @@ go mod tidy
 # Install pdfcpu for PDF support
 go install github.com/pdfcpu/pdfcpu/cmd/pdfcpu@latest
 export PATH=$PATH:$(go env GOPATH)/bin
+
+# Install Chrome/Chromium (required for page capture mode)
+# Ubuntu/Debian:
+sudo apt install chromium-browser
+# Or Google Chrome:
+wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+sudo dpkg -i google-chrome-stable_current_amd64.deb
+
+# Optional: Install Ghostscript (for CMYK PDF)
+sudo apt install ghostscript
+
+# Optional: Install ImageMagick (for CMYK TIFF)
+sudo apt install imagemagick
 ```
 
 ### Running
@@ -99,9 +126,10 @@ The interactive wizard will guide you through the configuration.
    │  2. 📝 Find a word/phrase on site (HTML, Word, PDF)     │
    │  3. 💔 Search for broken links                          │
    │  4. 🖼️  Search for oversized images                      │
+   │  5. 📄 Generate PDF for every page (with screenshots)   │
    └─────────────────────────────────────────────────────────┘
 
-   Enter choice (1-4): 2
+   Enter choice (1-5): 2
 
 📝 Enter the word or phrase to search for:
    → privacy policy
@@ -110,6 +138,36 @@ The interactive wizard will guide you through the configuration.
 
 🔄 Max retries per page (default 3): 3
 ```
+
+### Page Capture Mode (Option 5)
+
+When you select option 5, you'll see a sub-menu for output format:
+
+```
+📄 What format do you want to capture?
+
+   ┌─────────────────────────────────────────────────────────┐
+   │  a. 📑 PDF only                                         │
+   │  b. 🖼️  Images only (PNG)                                │
+   │  c. 📑🖼️  Both PDF + Images                              │
+   │  d. 🎨 CMYK PDF (for print) *                            │
+   │  e. 🎨 CMYK TIFF (for InDesign) *                        │
+   └─────────────────────────────────────────────────────────┘
+   * Requires Ghostscript (d) or ImageMagick (e) installed
+
+   Enter choice (a/b/c/d/e): c
+   📑🖼️  Will generate both PDFs and PNG screenshots
+   📁 Output folder: ./page_captures/
+
+┌─────────────────── PDF CAPTURE STARTING ───────────────────┐
+│  🎯 Target: https://example.com                            │
+│  📁 Output: pdf_captures_2024-01-15_14-30-00               │
+├────────────────────────────────────────────────────────────┤
+│  💡 Press 'c' + Enter to cancel and save current progress  │
+└────────────────────────────────────────────────────────────┘
+```
+
+**Tip:** Press `c` + Enter at any time to stop crawling and keep the files captured so far.
 
 ### Handling Cloudflare Protection
 
@@ -150,6 +208,12 @@ During crawling, you'll see real-time updates:
 📊 [2m 15s] Pages: 142 | Matches: 8 | Errors: 3 | Blocked: 2 (Queue: 1, Recovered: 1) | 1.1 p/s | 45.2 KB/s
 ```
 
+For page capture mode:
+
+```
+📊 [4m 15s] Pages: 180 | PDFs: 152 | Screenshots: 152 | Errors: 9 | 0.7 p/s
+```
+
 ### Final Report
 
 ```
@@ -172,6 +236,23 @@ During crawling, you'll see real-time updates:
 ║  🔗 Links Checked:         0                                      ║
 ║  ⏭️  Skipped (External):    156                                    ║
 ...
+```
+
+For page capture mode:
+
+```
+╔═══════════════════════════════════════════════════════════════════╗
+║                  📊 PAGE CAPTURE COMPLETE 📊                      ║
+╠═══════════════════════════════════════════════════════════════════╣
+║                                                                   ║
+║  ⏱️  Total Time:           4m 30s                                  ║
+║  📄 Pages Visited:         180                                    ║
+║  📑 PDFs Generated:        152                                    ║
+║  🖼️  Images Generated:      152                                    ║
+║  ❌ Errors:                9                                      ║
+║  📁 Output Directory:      pdf_captures_2024-01-15_14-30-00       ║
+║                                                                   ║
+╚═══════════════════════════════════════════════════════════════════╝
 ```
 
 ### CSV Results
@@ -199,6 +280,15 @@ https://example.com/old-page,https://example.com/links,404,Not Found,2024-01-15T
 ImageURL,FoundOnPage,SizeKB,ContentType,Timestamp
 https://example.com/hero.jpg,https://example.com/,2048,image/jpeg,2024-01-15T14:32:45Z
 ```
+
+**Page Capture Mode:**
+
+Files are saved directly to a timestamped folder (e.g., `pdf_captures_2024-01-15_14-30-00/`):
+
+- `index.pdf` / `index.png` - Homepage
+- `about.pdf` / `about.png` - About page
+- `contact_us.pdf` / `contact_us.png` - Contact page
+- etc.
 
 ---
 
@@ -260,7 +350,8 @@ webcrawler/
 │   └── tmp/                     # Temporary files for PDF processing
 └── internal/
     ├── crawler/
-    │   └── crawler.go           # Core crawling logic & statistics
+    │   ├── crawler.go           # Core crawling logic & statistics
+    │   └── pdfcapture.go        # Page capture with Chrome/PDF/CMYK
     └── parser/
         ├── docx.go              # Word document parser
         └── pdf.go               # PDF text extractor
@@ -276,6 +367,38 @@ webcrawler/
 go install github.com/pdfcpu/pdfcpu/cmd/pdfcpu@latest
 export PATH=$PATH:$(go env GOPATH)/bin
 ```
+
+### "google-chrome: executable file not found" (Page Capture Mode)
+
+```bash
+# Install Chromium
+sudo apt install chromium-browser
+
+# Or install Google Chrome
+wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+sudo dpkg -i google-chrome-stable_current_amd64.deb
+sudo apt --fix-broken install -y
+```
+
+### "ghostscript (gs) not found" (CMYK PDF)
+
+```bash
+sudo apt install ghostscript
+```
+
+### "imagemagick not found" (CMYK TIFF)
+
+```bash
+sudo apt install imagemagick
+```
+
+### "context deadline exceeded" (Page Capture Mode)
+
+This means a page took longer than 60 seconds to render. Options:
+
+- Ignore it (a few timeouts are normal for slow pages)
+- Reduce concurrency to give Chrome more resources
+- Some pages with heavy JavaScript may always timeout
 
 ### High blocked page count
 
@@ -320,6 +443,7 @@ GOOS=darwin GOARCH=amd64 go build -o webcrawler-mac main.go
 - [golang.org/x/net](https://pkg.go.dev/golang.org/x/net) - HTML parsing
 - [baliance.com/gooxml](https://github.com/baliance/gooxml) - DOCX parsing
 - [pdfcpu](https://github.com/pdfcpu/pdfcpu) - PDF text extraction (external CLI)
+- [chromedp](https://github.com/chromedp/chromedp) - Chrome DevTools Protocol (for page capture)
 
 ---
 

@@ -43,7 +43,34 @@ func (m SearchMode) String() string {
 	case ModeOversizedImages:
 		return "Oversized Image Check"
 	case ModePDFCapture:
-		return "PDF Capture"
+		return "Page Capture"
+	default:
+		return "Unknown"
+	}
+}
+
+type CaptureFormat int
+
+const (
+	CapturePDFOnly CaptureFormat = iota + 1
+	CaptureImagesOnly
+	CaptureBoth
+	CaptureCMYKPDF
+	CaptureCMYKTIFF
+)
+
+func (c CaptureFormat) String() string {
+	switch c {
+	case CapturePDFOnly:
+		return "PDF only"
+	case CaptureImagesOnly:
+		return "Images only (PNG)"
+	case CaptureBoth:
+		return "PDF + Images"
+	case CaptureCMYKPDF:
+		return "CMYK PDF (for print)"
+	case CaptureCMYKTIFF:
+		return "CMYK TIFF (for InDesign)"
 	default:
 		return "Unknown"
 	}
@@ -60,6 +87,7 @@ type Config struct {
 	RetryDelay         time.Duration
 	RetryBlockedPages  bool
 	BlockedRetryPasses int
+	CaptureFormat      CaptureFormat
 }
 
 type Stats struct {

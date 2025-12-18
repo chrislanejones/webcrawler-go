@@ -88,8 +88,8 @@ func main() {
 	fmt.Println("   │  1. 🔗 Find a link on site (HTML, Word, PDF)            │")
 	fmt.Println("   │  2. 📝 Find a word/phrase on site (HTML, Word, PDF)     │")
 	fmt.Println("   │  3. 💔 Search for broken links                          │")
-	fmt.Println("   │  4. 🖼️  Search for oversized images                      │")
-	fmt.Println("   │  5. 📄 Generate PDF for every page (with screenshots)   │")
+	fmt.Println("   │  4. 🖼️  Search for oversized images                     │")
+	fmt.Println("   │  5. 📄 Generate PDF/Image for every page                │")
 	fmt.Println("   └─────────────────────────────────────────────────────────┘")
 	fmt.Println()
 
@@ -117,6 +117,7 @@ func main() {
 	// Step 3: Get additional input based on mode
 	var searchTarget string
 	var imageSizeThreshold int64 = 500
+	var captureFormat crawler.CaptureFormat = crawler.CaptureBoth
 
 	switch mode {
 	case crawler.ModeSearchLink:
@@ -152,8 +153,44 @@ func main() {
 		fmt.Printf("   Looking for images larger than %dKB\n", imageSizeThreshold)
 
 	case crawler.ModePDFCapture:
-		fmt.Println("📄 Will crawl site and generate PDF + screenshot for every page")
-		fmt.Println("   📁 Output folder: ./pdf_captures/")
+		fmt.Println("📄 What format do you want to capture?")
+		fmt.Println()
+		fmt.Println("   ┌─────────────────────────────────────────────────────────┐")
+		fmt.Println("   │  a. 📑 PDF only                                         │")
+		fmt.Println("   │  b. 🖼️  Images only (PNG)                                │")
+		fmt.Println("   │  c. 📑🖼️  Both PDF + Images                              │")
+		fmt.Println("   │  d. 🎨 CMYK PDF (for print) *                            │")
+		fmt.Println("   │  e. 🎨 CMYK TIFF (for InDesign) *                        │")
+		fmt.Println("   └─────────────────────────────────────────────────────────┘")
+		fmt.Println("   * Requires Ghostscript (d) or ImageMagick (e) installed")
+		fmt.Println()
+		for {
+			fmt.Print("   Enter choice (a/b/c/d/e): ")
+			formatInput, _ := reader.ReadString('\n')
+			formatChoice := strings.ToLower(strings.TrimSpace(formatInput))
+			switch formatChoice {
+			case "a":
+				captureFormat = crawler.CapturePDFOnly
+				fmt.Println("   📑 Will generate PDFs only")
+			case "b":
+				captureFormat = crawler.CaptureImagesOnly
+				fmt.Println("   🖼️  Will generate PNG screenshots only")
+			case "c":
+				captureFormat = crawler.CaptureBoth
+				fmt.Println("   📑🖼️  Will generate both PDFs and PNG screenshots")
+			case "d":
+				captureFormat = crawler.CaptureCMYKPDF
+				fmt.Println("   🎨 Will generate CMYK PDFs (requires Ghostscript)")
+			case "e":
+				captureFormat = crawler.CaptureCMYKTIFF
+				fmt.Println("   🎨 Will generate CMYK TIFFs (requires ImageMagick)")
+			default:
+				fmt.Println("   ❌ Please enter a, b, c, d, or e")
+				continue
+			}
+			break
+		}
+		fmt.Println("   📁 Output folder: ./page_captures/")
 	}
 
 	fmt.Println()
@@ -194,6 +231,7 @@ func main() {
 		RetryDelay:         2 * time.Second,
 		RetryBlockedPages:  true,
 		BlockedRetryPasses: 3,
+		CaptureFormat:      captureFormat,
 	}
 
 	fmt.Println("┌─────────────────── LAUNCH CONFIG ───────────────────┐")
