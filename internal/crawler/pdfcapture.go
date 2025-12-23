@@ -3,15 +3,13 @@ package crawler
 import (
 	"bufio"
 	"context"
-	"crypto/tls"
 	"fmt"
-	"io"
-	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -35,15 +33,16 @@ var (
 )
 
 var (
-	pdfVisited      sync.Map
-	pdfWg           sync.WaitGroup
-	pdfSema         chan struct{}
-	pdfStats        PDFCaptureStats
-	pdfStartTime    time.Time
-	pdfBaseURL      *url.URL
-	pdfOutputDir    string
-	pdfConcurrency  int
+	pdfVisited       sync.Map
+	pdfWg            sync.WaitGroup
+	pdfSema          chan struct{}
+	pdfStats         PDFCaptureStats
+	pdfStartTime     time.Time
+	pdfBaseURL       *url.URL
+	pdfOutputDir     string
+	pdfConcurrency   int
 	pdfCaptureFormat CaptureFormat
+	pdfPathFilter    string // Only crawl URLs matching this path prefix
 )
 
 // StartPDFCapture begins crawling and capturing PDFs/screenshots
@@ -53,6 +52,7 @@ func StartPDFCapture(cfg Config) {
 	pdfStartTime = time.Now()
 	pdfConcurrency = cfg.MaxConcurrency
 	pdfCaptureFormat = cfg.CaptureFormat
+	pdfPathFilter = cfg.PathFilter
 	atomic.StoreInt32(&cancelRequested, 0)
 
 	// Default to both if not set
@@ -87,6 +87,9 @@ func StartPDFCapture(cfg Config) {
 
 	fmt.Println("┌─────────────────── PAGE CAPTURE STARTING ──────────────────┐")
 	fmt.Printf("│  🎯 Target: %-43s │\n", truncateString(cfg.StartURL, 43))
+	if pdfPathFilter != "" {
+		fmt.Printf("│  🌲 Path:   %-43s │\n", truncateString(pdfPathFilter, 43))
+	}
 	fmt.Printf("│  📁 Output: %-43s │\n", pdfOutputDir)
 	fmt.Printf("│  📋 Format: %-43s │\n", formatLabel)
 	fmt.Println("├────────────────────────────────────────────────────────────┤")
@@ -160,11 +163,8 @@ func crawlForPDF(link string) {
 
 		atomic.AddInt64(&pdfStats.PagesVisited, 1)
 
-		// First, fetch the page to extract links (lightweight)
-		links := fetchAndExtractLinks(pageURL)
-
-		// Then capture PDF and screenshot using Chrome
-		capturePage(pageURL)
+		// Capture PDF/screenshot and extract links from the rendered DOM
+		links := capturePage(pageURL)
 
 		// Queue discovered links for crawling (only if not cancelled)
 		if atomic.LoadInt32(&cancelRequested) == 0 {
@@ -175,81 +175,9 @@ func crawlForPDF(link string) {
 	}(link)
 }
 
-func fetchAndExtractLinks(pageURL string) []string {
-	var links []string
-
-	client := &http.Client{
-		Timeout: 15 * time.Second,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		},
-	}
-
-	req, err := http.NewRequest("GET", pageURL, nil)
-	if err != nil {
-		return links
-	}
-
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-	req.Header.Set("Accept", "text/html,application/xhtml+xml")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return links
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return links
-	}
-
-	contentType := resp.Header.Get("Content-Type")
-	if !strings.Contains(contentType, "text/html") {
-		return links
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return links
-	}
-
-	// Extract href links using regex (faster than parsing)
-	hrefRe := regexp.MustCompile(`href=["']([^"'#]+)["']`)
-	matches := hrefRe.FindAllStringSubmatch(string(body), -1)
-
-	for _, match := range matches {
-		if len(match) > 1 {
-			href := match[1]
-
-			// Skip non-http links
-			if strings.HasPrefix(href, "mailto:") ||
-				strings.HasPrefix(href, "tel:") ||
-				strings.HasPrefix(href, "javascript:") {
-				continue
-			}
-
-			// Resolve relative URLs
-			u, err := url.Parse(href)
-			if err != nil {
-				continue
-			}
-
-			resolved := pdfBaseURL.ResolveReference(u)
-
-			// Only follow same-domain links
-			if resolved.Host != pdfBaseURL.Host {
-				atomic.AddInt64(&pdfStats.SkippedExternal, 1)
-				continue
-			}
-
-			links = append(links, resolved.String())
-		}
-	}
-
-	return links
-}
-
-func capturePage(pageURL string) {
+func capturePage(pageURL string) []string {
+	var extractedLinks []string
+	
 	// Create a safe filename from URL
 	filename := sanitizeFilename(pageURL)
 
@@ -260,25 +188,25 @@ func capturePage(pageURL string) {
 	switch pdfCaptureFormat {
 	case CapturePDFOnly:
 		if _, err := os.Stat(pdfPath); err == nil {
-			return
+			return nil
 		}
 	case CaptureImagesOnly:
 		if _, err := os.Stat(pngPath); err == nil {
-			return
+			return nil
 		}
 	case CaptureBoth:
 		if _, err := os.Stat(pdfPath); err == nil {
-			return
+			return nil
 		}
 	case CaptureCMYKPDF:
 		cmykPdfPath := filepath.Join(pdfOutputDir, filename+"_cmyk.pdf")
 		if _, err := os.Stat(cmykPdfPath); err == nil {
-			return
+			return nil
 		}
 	case CaptureCMYKTIFF:
 		tiffPath := filepath.Join(pdfOutputDir, filename+"_cmyk.tiff")
 		if _, err := os.Stat(tiffPath); err == nil {
-			return
+			return nil
 		}
 	}
 
@@ -300,12 +228,13 @@ func capturePage(pageURL string) {
 	ctx, cancel := chromedp.NewContext(allocCtx)
 	defer cancel()
 
-	// Set timeout
-	ctx, cancel = context.WithTimeout(ctx, 60*time.Second)
+	// Set timeout (120s for slow/heavy pages)
+	ctx, cancel = context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 
 	var pdfBuf []byte
 	var pngBuf []byte
+	var linksHTML string
 
 	// Build actions based on capture format
 	actions := []chromedp.Action{
@@ -313,8 +242,15 @@ func capturePage(pageURL string) {
 		chromedp.Navigate(pageURL),
 		// Wait for page to load
 		chromedp.WaitReady("body", chromedp.ByQuery),
-		// Wait a bit for any JS to finish
-		chromedp.Sleep(2 * time.Second),
+		// Wait for JS to finish
+		chromedp.Sleep(3 * time.Second),
+		// Extract all links from the rendered DOM
+		chromedp.Evaluate(`
+			Array.from(document.querySelectorAll('a[href]'))
+				.map(a => a.href)
+				.filter(href => href && !href.startsWith('javascript:') && !href.startsWith('mailto:') && !href.startsWith('tel:'))
+				.join('\n')
+		`, &linksHTML),
 	}
 
 	// Add screenshot capture if needed
@@ -373,6 +309,8 @@ func capturePage(pageURL string) {
 				WithMarginBottom(0.4).
 				WithMarginLeft(0.4).
 				WithMarginRight(0.4).
+				WithDisplayHeaderFooter(false).
+				WithGenerateDocumentOutline(false).
 				Do(ctx)
 			return err
 		}))
@@ -383,14 +321,14 @@ func capturePage(pageURL string) {
 	if err != nil {
 		atomic.AddInt64(&pdfStats.Errors, 1)
 		fmt.Printf("\n❌ Error capturing %s: %v\n", truncateString(pageURL, 50), err)
-		return
+		return nil
 	}
 
 	// Save PDF if generated
 	if pdfCaptureFormat == CapturePDFOnly || pdfCaptureFormat == CaptureBoth {
 		if err := os.WriteFile(pdfPath, pdfBuf, 0644); err != nil {
 			atomic.AddInt64(&pdfStats.Errors, 1)
-			return
+			return extractedLinks
 		}
 		atomic.AddInt64(&pdfStats.PDFsGenerated, 1)
 	}
@@ -401,7 +339,7 @@ func capturePage(pageURL string) {
 		tempPdfPath := filepath.Join(pdfOutputDir, filename+"_temp.pdf")
 		if err := os.WriteFile(tempPdfPath, pdfBuf, 0644); err != nil {
 			atomic.AddInt64(&pdfStats.Errors, 1)
-			return
+			return extractedLinks
 		}
 		
 		// Convert to CMYK using Ghostscript
@@ -410,7 +348,7 @@ func capturePage(pageURL string) {
 			atomic.AddInt64(&pdfStats.Errors, 1)
 			fmt.Printf("\n❌ CMYK conversion failed for %s: %v\n", truncateString(pageURL, 40), err)
 			os.Remove(tempPdfPath)
-			return
+			return extractedLinks
 		}
 		os.Remove(tempPdfPath) // Clean up temp file
 		atomic.AddInt64(&pdfStats.PDFsGenerated, 1)
@@ -420,7 +358,7 @@ func capturePage(pageURL string) {
 	if pdfCaptureFormat == CaptureImagesOnly || pdfCaptureFormat == CaptureBoth {
 		if err := os.WriteFile(pngPath, pngBuf, 0644); err != nil {
 			atomic.AddInt64(&pdfStats.Errors, 1)
-			return
+			return extractedLinks
 		}
 		atomic.AddInt64(&pdfStats.ScreenshotsGen, 1)
 	}
@@ -431,7 +369,7 @@ func capturePage(pageURL string) {
 		tempPngPath := filepath.Join(pdfOutputDir, filename+"_temp.png")
 		if err := os.WriteFile(tempPngPath, pngBuf, 0644); err != nil {
 			atomic.AddInt64(&pdfStats.Errors, 1)
-			return
+			return extractedLinks
 		}
 		
 		// Convert to CMYK TIFF using ImageMagick
@@ -440,7 +378,7 @@ func capturePage(pageURL string) {
 			atomic.AddInt64(&pdfStats.Errors, 1)
 			fmt.Printf("\n❌ CMYK TIFF conversion failed for %s: %v\n", truncateString(pageURL, 40), err)
 			os.Remove(tempPngPath)
-			return
+			return extractedLinks
 		}
 		os.Remove(tempPngPath) // Clean up temp file
 		atomic.AddInt64(&pdfStats.ScreenshotsGen, 1)
@@ -459,6 +397,117 @@ func capturePage(pageURL string) {
 	case CaptureCMYKTIFF:
 		fmt.Printf("\n🎨 Captured CMYK TIFF: %s\n", truncateString(pageURL, 49))
 	}
+
+	// Process extracted links from the rendered DOM
+	if linksHTML != "" {
+		for _, href := range strings.Split(linksHTML, "\n") {
+			href = strings.TrimSpace(href)
+			if href == "" {
+				continue
+			}
+			
+			// Parse and validate the link
+			u, err := url.Parse(href)
+			if err != nil {
+				continue
+			}
+			
+			// Only follow same-domain links
+			if u.Host != pdfBaseURL.Host {
+				atomic.AddInt64(&pdfStats.SkippedExternal, 1)
+				continue
+			}
+			
+			// Apply path filter if set (only crawl URLs within the specified path)
+			if pdfPathFilter != "" && !strings.HasPrefix(u.Path, pdfPathFilter) {
+				continue
+			}
+			
+			extractedLinks = append(extractedLinks, href)
+			
+			// Detect pagination pattern and generate additional page URLs
+			// Check for ?page=N pattern
+			if q := u.Query(); q.Get("page") != "" {
+				if pageNum, err := strconv.Atoi(q.Get("page")); err == nil {
+					// Generate next few page URLs
+					for i := 1; i <= 5; i++ {
+						newQ := u.Query()
+						newQ.Set("page", strconv.Itoa(pageNum+i))
+						newURL := *u
+						newURL.RawQuery = newQ.Encode()
+						extractedLinks = append(extractedLinks, newURL.String())
+					}
+				}
+			}
+		}
+	}
+	
+	// If this is a listing page (index or no specific article), try common pagination patterns
+	parsedPage, _ := url.Parse(pageURL)
+	if parsedPage != nil {
+		// Normalize paths for comparison (remove trailing slash)
+		normalizedPath := strings.TrimSuffix(parsedPage.Path, "/")
+		normalizedFilter := strings.TrimSuffix(pdfPathFilter, "/")
+		
+		// Check if this is a listing/index page (ends with / or matches filter path exactly)
+		isListingPage := strings.HasSuffix(parsedPage.Path, "/") || 
+			normalizedPath == normalizedFilter ||
+			parsedPage.Path == pdfPathFilter
+		
+		if isListingPage {
+			// Try adding ?page=N if not already present
+			if parsedPage.Query().Get("page") == "" {
+				for i := 2; i <= 10; i++ {
+					newQ := parsedPage.Query()
+					newQ.Set("page", strconv.Itoa(i))
+					newURL := *parsedPage
+					newURL.RawQuery = newQ.Encode()
+					extractedLinks = append(extractedLinks, newURL.String())
+				}
+			}
+			
+			// For news/press release pages, generate year/month archive URLs
+			// BUT only if this is the BASE listing page (not already an archive page with year in path)
+			// Check that path doesn't already contain a year like /2024/ or /2025/
+			hasYearInPath := regexp.MustCompile(`/20\d{2}/`).MatchString(parsedPage.Path)
+			
+			if !hasYearInPath && (strings.Contains(parsedPage.Path, "news") || strings.Contains(parsedPage.Path, "press")) {
+				currentYear := time.Now().Year()
+				months := []string{"january", "february", "march", "april", "may", "june", 
+					"july", "august", "september", "october", "november", "december"}
+				
+				basePath := parsedPage.Path
+				if !strings.HasSuffix(basePath, "/") {
+					basePath = basePath + "/"
+				}
+				
+				// Generate URLs for current year and previous year
+				for year := currentYear; year >= currentYear-1; year-- {
+					for _, month := range months {
+						// Skip future months
+						if year == currentYear {
+							currentMonth := int(time.Now().Month())
+							monthIndex := -1
+							for i, m := range months {
+								if m == month {
+									monthIndex = i + 1
+									break
+								}
+							}
+							if monthIndex > currentMonth {
+								continue
+							}
+						}
+						archiveURL := fmt.Sprintf("%s://%s%s%d/%s/", 
+							parsedPage.Scheme, parsedPage.Host, basePath, year, month)
+						extractedLinks = append(extractedLinks, archiveURL)
+					}
+				}
+			}
+		}
+	}
+	
+	return extractedLinks
 }
 
 func sanitizeFilename(urlStr string) string {

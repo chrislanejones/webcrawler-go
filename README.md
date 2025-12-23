@@ -20,6 +20,28 @@ A powerful Go-based web crawler with an interactive terminal wizard interface. F
 | **🖼️ Oversized Images**  | Find images exceeding a specified file size threshold                      |
 | **📄 Page Capture**      | Generate PDFs, screenshots, or CMYK files for every page on the site       |
 
+### 🌲 Path Filtering (Crawl Subsections)
+
+Crawl only a specific section of a website by including the path in your URL:
+
+```
+🌐 What site do you want to check?
+   (Tip: Include a path like /newsroom/ to only crawl that section)
+   → https://www.example.gov/newsroom/news-releases
+
+   🌲 Detected path: /newsroom/news-releases/
+   📍 Only crawl pages under this path? (Y/n): y
+   ✓ Will only crawl pages under /newsroom/news-releases/
+```
+
+This is useful for:
+
+- Crawling only a blog, newsroom, or documentation section
+- Avoiding irrelevant pages on large sites
+- Faster, more focused crawls
+
+**Smart Archive Detection:** For news/press release sections, the crawler automatically generates year/month archive URLs (e.g., `/newsroom/news-releases/2025/january/`) to discover all articles even when the listing page uses JavaScript pagination.
+
 ### 📄 Page Capture Options
 
 | Format                | Output          | Requirements         |
@@ -114,6 +136,7 @@ The interactive wizard will guide you through the configuration.
 ╚═══════════════════════════════════════════════════════════════════╝
 
 🌐 What site do you want to check?
+   (Tip: Include a path like /newsroom/ to only crawl that section)
    → example.com
 
 🔍 Testing connection to https://example.com...
@@ -139,6 +162,30 @@ The interactive wizard will guide you through the configuration.
 🔄 Max retries per page (default 3): 3
 ```
 
+### Path Filtering Example
+
+To crawl only a specific section of a site, include the path in the URL:
+
+```
+🌐 What site do you want to check?
+   (Tip: Include a path like /newsroom/ to only crawl that section)
+   → https://www.governor.virginia.gov/newsroom/news-releases
+
+   🌲 Detected path: /newsroom/news-releases/
+   📍 Only crawl pages under this path? (Y/n): y
+   ✓ Will only crawl pages under /newsroom/news-releases/
+
+┌─────────────────── LAUNCH CONFIG ───────────────────┐
+│  🌐 Target:       https://www.governor.virginia.go... │
+│  🌲 Path filter:  /newsroom/news-releases/            │
+│  📊 Mode:         Page Capture                        │
+│  ⚡ Concurrency:  20                                  │
+│  🔄 Max retries:  3                                   │
+└─────────────────────────────────────────────────────┘
+```
+
+The crawler will only visit pages whose URL path starts with `/newsroom/news-releases/`, skipping all other sections of the site.
+
 ### Page Capture Mode (Option 5)
 
 When you select option 5, you'll see a sub-menu for output format:
@@ -159,9 +206,11 @@ When you select option 5, you'll see a sub-menu for output format:
    📑🖼️  Will generate both PDFs and PNG screenshots
    📁 Output folder: ./page_captures/
 
-┌─────────────────── PDF CAPTURE STARTING ───────────────────┐
-│  🎯 Target: https://example.com                            │
-│  📁 Output: pdf_captures_2024-01-15_14-30-00               │
+┌─────────────────── PAGE CAPTURE STARTING ──────────────────┐
+│  🎯 Target: https://example.com/newsroom/                  │
+│  🌲 Path:   /newsroom/                                     │
+│  📁 Output: page_captures_2024-01-15_14-30-00              │
+│  📋 Format: PDF + Images                                   │
 ├────────────────────────────────────────────────────────────┤
 │  💡 Press 'c' + Enter to cancel and save current progress  │
 └────────────────────────────────────────────────────────────┘
@@ -250,7 +299,7 @@ For page capture mode:
 ║  📑 PDFs Generated:        152                                    ║
 ║  🖼️  Images Generated:      152                                    ║
 ║  ❌ Errors:                9                                      ║
-║  📁 Output Directory:      pdf_captures_2024-01-15_14-30-00       ║
+║  📁 Output Directory:      page_captures_2024-01-15_14-30-00      ║
 ║                                                                   ║
 ╚═══════════════════════════════════════════════════════════════════╝
 ```
@@ -294,13 +343,15 @@ Files are saved directly to a timestamped folder (e.g., `pdf_captures_2024-01-15
 
 ## ⚙️ Configuration Options
 
-| Option               | Default | Description                                          |
-| -------------------- | ------- | ---------------------------------------------------- |
-| Concurrency          | 5       | Number of concurrent requests (max 20)               |
-| Max Retries          | 3       | Retry attempts per page on failure                   |
-| Retry Delay          | 2s      | Base delay between retries (increases exponentially) |
-| Blocked Retry Passes | 3       | Number of passes to retry blocked pages              |
-| Image Size Threshold | 500KB   | Threshold for oversized image detection              |
+| Option               | Default | Description                                              |
+| -------------------- | ------- | -------------------------------------------------------- |
+| Concurrency          | 5       | Number of concurrent requests (max 20)                   |
+| Max Retries          | 3       | Retry attempts per page on failure                       |
+| Retry Delay          | 2s      | Base delay between retries (increases exponentially)     |
+| Blocked Retry Passes | 3       | Number of passes to retry blocked pages                  |
+| Image Size Threshold | 500KB   | Threshold for oversized image detection                  |
+| Path Filter          | (none)  | Only crawl URLs starting with this path (e.g., `/blog/`) |
+| Page Timeout         | 120s    | Max time to wait for a page to render (Page Capture)     |
 
 ---
 
@@ -394,11 +445,20 @@ sudo apt install imagemagick
 
 ### "context deadline exceeded" (Page Capture Mode)
 
-This means a page took longer than 60 seconds to render. Options:
+This means a page took longer than 120 seconds to render. Options:
 
 - Ignore it (a few timeouts are normal for slow pages)
 - Reduce concurrency to give Chrome more resources
 - Some pages with heavy JavaScript may always timeout
+
+### Path filter not finding all pages
+
+If the crawler isn't finding all pages in a section:
+
+- The site may use JavaScript-loaded content that doesn't expose links in the DOM
+- For news/press release sections, the crawler auto-generates year/month archive URLs
+- Try entering a more specific path or a known archive URL directly
+- Some sites use infinite scroll or AJAX pagination that can't be fully crawled
 
 ### High blocked page count
 

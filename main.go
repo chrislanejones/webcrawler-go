@@ -26,9 +26,10 @@ func main() {
 	// Step 1: Get the site URL
 	var siteURL string
 	var altEntryPoints []string
+	var pathFilter string
 
 	for {
-		fmt.Print("🌐 What site do you want to check?\n   → ")
+		fmt.Print("🌐 What site do you want to check?\n   (Tip: Include a path like /newsroom/ to only crawl that section)\n   → ")
 		input, err := reader.ReadString('\n')
 		if err != nil {
 			fmt.Println("❌ Error reading input:", err)
@@ -45,6 +46,25 @@ func main() {
 		if err != nil || parsedURL.Host == "" {
 			fmt.Println("❌ Invalid URL. Please enter a valid website address.")
 			continue
+		}
+
+		// Check if user provided a path (not just "/" or "")
+		if parsedURL.Path != "" && parsedURL.Path != "/" {
+			pathFilter = parsedURL.Path
+			// Ensure it ends with / for proper prefix matching
+			if !strings.HasSuffix(pathFilter, "/") {
+				pathFilter = pathFilter + "/"
+			}
+			fmt.Printf("\n   🌲 Detected path: %s\n", pathFilter)
+			fmt.Print("   📍 Only crawl pages under this path? (Y/n): ")
+			confirmPath, _ := reader.ReadString('\n')
+			confirmPath = strings.ToLower(strings.TrimSpace(confirmPath))
+			if confirmPath == "n" || confirmPath == "no" {
+				pathFilter = ""
+				fmt.Println("   ✓ Will crawl entire site")
+			} else {
+				fmt.Printf("   ✓ Will only crawl pages under %s\n", pathFilter)
+			}
 		}
 
 		fmt.Printf("\n🔍 Testing connection to %s...\n", siteURL)
@@ -232,10 +252,14 @@ func main() {
 		RetryBlockedPages:  true,
 		BlockedRetryPasses: 3,
 		CaptureFormat:      captureFormat,
+		PathFilter:         pathFilter,
 	}
 
 	fmt.Println("┌─────────────────── LAUNCH CONFIG ───────────────────┐")
 	fmt.Printf("│  🌐 Target:       %-35s │\n", truncateString(siteURL, 35))
+	if pathFilter != "" {
+		fmt.Printf("│  🌲 Path filter:  %-35s │\n", truncateString(pathFilter, 35))
+	}
 	fmt.Printf("│  📊 Mode:         %-35s │\n", mode.String())
 	if searchTarget != "" {
 		fmt.Printf("│  🎯 Search for:   %-35s │\n", truncateString(searchTarget, 35))

@@ -88,6 +88,7 @@ type Config struct {
 	RetryBlockedPages  bool
 	BlockedRetryPasses int
 	CaptureFormat      CaptureFormat
+	PathFilter         string // Only crawl URLs starting with this path (e.g., "/newsroom/")
 }
 
 type Stats struct {
