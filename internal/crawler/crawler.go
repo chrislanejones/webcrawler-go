@@ -26,10 +26,11 @@ type SearchMode int
 
 const (
 	ModeSearchLink SearchMode = iota + 1
-	ModeSearchWord
-	ModeBrokenLinks
-	ModeOversizedImages
-	ModePDFCapture
+    ModeSearchWord
+    ModeBrokenLinks
+    ModeOversizedImages
+    ModePDFCapture
+    ModeVANewsPDFExport
 )
 
 func (m SearchMode) String() string {
@@ -44,6 +45,8 @@ func (m SearchMode) String() string {
 		return "Oversized Image Check"
 	case ModePDFCapture:
 		return "Page Capture"
+	case ModeVANewsPDFExport:
+        return "VA News Releases PDF Export"
 	default:
 		return "Unknown"
 	}

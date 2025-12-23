@@ -104,12 +104,13 @@ func main() {
 	// Step 2: Get the search mode
 	fmt.Println("📋 What should I check the site for?")
 	fmt.Println()
-	fmt.Println("   ┌─────────────────────────────────────────────────────────┐")
-	fmt.Println("   │  1. 🔗 Find a link on site (HTML, Word, PDF)            │")
-	fmt.Println("   │  2. 📝 Find a word/phrase on site (HTML, Word, PDF)     │")
-	fmt.Println("   │  3. 💔 Search for broken links                          │")
-	fmt.Println("   │  4. 🖼️  Search for oversized images                     │")
-	fmt.Println("   │  5. 📄 Generate PDF/Image for every page                │")
+	fmt.Println("   ┌──────────────────────────────────────────────────────────┐")
+	fmt.Println("   │  1. 🔗 Find a link on site (HTML, Word, PDF)             │")
+	fmt.Println("   │  2. 📝 Find a word/phrase on site (HTML, Word, PDF)      │")
+	fmt.Println("   │  3. 💔 Search for broken links                           │")
+	fmt.Println("   │  4. 🖼️  Search for oversized images                      │")
+	fmt.Println("   │  5. 📄 Generate PDF/Image for every page                 │")
+	fmt.Println("   │  6. 📰 Just get VA Governor news release PDFs (2020–2025)│")
 	fmt.Println("   └─────────────────────────────────────────────────────────┘")
 	fmt.Println()
 
@@ -123,7 +124,7 @@ func main() {
 		}
 
 		choice, err := strconv.Atoi(strings.TrimSpace(input))
-		if err != nil || choice < 1 || choice > 5 {
+		if err != nil || choice < 1 || choice > 6 {
 			fmt.Println("   ❌ Please enter a number between 1 and 5")
 			continue
 		}
@@ -171,6 +172,8 @@ func main() {
 			}
 		}
 		fmt.Printf("   Looking for images larger than %dKB\n", imageSizeThreshold)
+	case crawler.ModeVANewsPDFExport:
+		fmt.Println("📰 Exporting Virginia Governor news releases (PDF only)")
 
 	case crawler.ModePDFCapture:
 		fmt.Println("📄 What format do you want to capture?")
@@ -275,6 +278,11 @@ func main() {
 	fmt.Println("🚀 LAUNCHING CRAWLER...")
 	fmt.Println()
 
+	// ✅ SPECIAL MODE: VA News Releases PDF Export
+    if mode == crawler.ModeVANewsPDFExport {
+    crawler.StartVANewsPDFExport()
+    return
+    }
 	crawler.Start(config)
 
 	fmt.Println()
