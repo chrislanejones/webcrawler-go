@@ -911,7 +911,7 @@ func checkImage(src, pageURL string) {
 	}
 }
 
-func extractInternalLinks(body []byte, pageURL string) {
+func extractInternalLinks(body []byte, _ string) {
 	doc, err := html.Parse(bytes.NewReader(body))
 	if err != nil {
 		return

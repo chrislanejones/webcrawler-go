@@ -251,16 +251,17 @@ When Cloudflare blocks the main page:
 
 ### Live Statistics
 
-During crawling, you'll see real-time updates:
+During crawling, you'll see real-time updates with a progress bar:
 
 ```
 📊 [2m 15s] Pages: 142 | Matches: 8 | Errors: 3 | Blocked: 2 (Queue: 1, Recovered: 1) | 1.1 p/s | 45.2 KB/s
 ```
 
-For page capture mode:
+For page capture mode, you'll see a live progress bar with the current page being processed:
 
 ```
-📊 [4m 15s] Pages: 180 | PDFs: 152 | Screenshots: 152 | Errors: 9 | 0.7 p/s
+⠹ [████████████░░░░░░░░]  60% │ ⏱ 4m 30s │ 📑 45 captured │ ⏳ 30 pending │ ❌ 2 │ 0.8/s
+   → .../newsroom/news-releases/2025/december/name-1072620-en.html
 ```
 
 ### Final Report
@@ -351,7 +352,7 @@ Files are saved directly to a timestamped folder (e.g., `pdf_captures_2024-01-15
 | Blocked Retry Passes | 3       | Number of passes to retry blocked pages                  |
 | Image Size Threshold | 500KB   | Threshold for oversized image detection                  |
 | Path Filter          | (none)  | Only crawl URLs starting with this path (e.g., `/blog/`) |
-| Page Timeout         | 120s    | Max time to wait for a page to render (Page Capture)     |
+| Page Timeout         | 180s    | Max time to wait for a page to render (Page Capture)     |
 
 ---
 
@@ -445,7 +446,7 @@ sudo apt install imagemagick
 
 ### "context deadline exceeded" (Page Capture Mode)
 
-This means a page took longer than 120 seconds to render. Options:
+This means a page took longer than 180 seconds to render. Options:
 
 - Ignore it (a few timeouts are normal for slow pages)
 - Reduce concurrency to give Chrome more resources
@@ -459,6 +460,15 @@ If the crawler isn't finding all pages in a section:
 - For news/press release sections, the crawler auto-generates year/month archive URLs
 - Try entering a more specific path or a known archive URL directly
 - Some sites use infinite scroll or AJAX pagination that can't be fully crawled
+
+### PDFs show only header/footer, no body content
+
+This happens when the page body is loaded via JavaScript/AJAX after the initial page load:
+
+- The crawler now waits for body content to stabilize before capturing
+- If still seeing empty bodies, the site may use a complex loading pattern
+- Try reducing concurrency to give Chrome more time to render
+- Some heavily JavaScript-dependent pages may not capture well
 
 ### High blocked page count
 

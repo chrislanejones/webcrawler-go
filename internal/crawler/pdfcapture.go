@@ -22,6 +22,7 @@ import (
 
 type PDFCaptureStats struct {
 	PagesVisited    int64
+	PagesQueued     int64
 	PDFsGenerated   int64
 	ScreenshotsGen  int64
 	Errors          int64
@@ -43,6 +44,8 @@ var (
 	pdfConcurrency   int
 	pdfCaptureFormat CaptureFormat
 	pdfPathFilter    string // Only crawl URLs matching this path prefix
+	pdfCurrentPage   string // Currently processing page (for status display)
+	pdfCurrentMu     sync.Mutex
 )
 
 // StartPDFCapture begins crawling and capturing PDFs/screenshots
@@ -150,6 +153,8 @@ func crawlForPDF(link string) {
 		return
 	}
 
+	atomic.AddInt64(&pdfStats.PagesQueued, 1)
+
 	pdfWg.Add(1)
 	go func(pageURL string) {
 		defer pdfWg.Done()
@@ -177,6 +182,11 @@ func crawlForPDF(link string) {
 
 func capturePage(pageURL string) []string {
 	var extractedLinks []string
+	
+	// Track current page for status display
+	pdfCurrentMu.Lock()
+	pdfCurrentPage = pageURL
+	pdfCurrentMu.Unlock()
 	
 	// Create a safe filename from URL
 	filename := sanitizeFilename(pageURL)
@@ -228,8 +238,8 @@ func capturePage(pageURL string) []string {
 	ctx, cancel := chromedp.NewContext(allocCtx)
 	defer cancel()
 
-	// Set timeout (120s for slow/heavy pages)
-	ctx, cancel = context.WithTimeout(ctx, 120*time.Second)
+	// Set timeout (180s for slow/heavy pages)
+	ctx, cancel = context.WithTimeout(ctx, 180*time.Second)
 	defer cancel()
 
 	var pdfBuf []byte
@@ -238,12 +248,52 @@ func capturePage(pageURL string) []string {
 
 	// Build actions based on capture format
 	actions := []chromedp.Action{
-		// Navigate to page
+		// Navigate to page and wait for network to be mostly idle
 		chromedp.Navigate(pageURL),
-		// Wait for page to load
+		// Wait for DOM to be ready
 		chromedp.WaitReady("body", chromedp.ByQuery),
-		// Wait for JS to finish
-		chromedp.Sleep(3 * time.Second),
+		// Initial wait for JS frameworks to initialize
+		chromedp.Sleep(2 * time.Second),
+		// Scroll to trigger lazy loading
+		chromedp.Evaluate(`window.scrollTo(0, document.body.scrollHeight)`, nil),
+		chromedp.Sleep(1 * time.Second),
+		chromedp.Evaluate(`window.scrollTo(0, 0)`, nil),
+		chromedp.Sleep(500 * time.Millisecond),
+		// Wait for content to actually load - check body text length
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			var lastLength int
+			stableCount := 0
+			
+			// Wait until body content stabilizes (stops growing)
+			for attempt := 0; attempt < 30; attempt++ {
+				var currentLength int
+				err := chromedp.Evaluate(`document.body.innerText.length`, &currentLength).Do(ctx)
+				if err != nil {
+					time.Sleep(500 * time.Millisecond)
+					continue
+				}
+				
+				// Check if content has stabilized
+				if currentLength > 500 && currentLength == lastLength {
+					stableCount++
+					if stableCount >= 3 {
+						// Content stable for 1.5 seconds, good to go
+						return nil
+					}
+				} else {
+					stableCount = 0
+				}
+				
+				lastLength = currentLength
+				time.Sleep(500 * time.Millisecond)
+			}
+			
+			// Final fallback wait
+			time.Sleep(2 * time.Second)
+			return nil
+		}),
+		// Extra wait for any final rendering
+		chromedp.Sleep(1 * time.Second),
 		// Extract all links from the rendered DOM
 		chromedp.Evaluate(`
 			Array.from(document.querySelectorAll('a[href]'))
@@ -320,7 +370,9 @@ func capturePage(pageURL string) []string {
 
 	if err != nil {
 		atomic.AddInt64(&pdfStats.Errors, 1)
-		fmt.Printf("\n❌ Error capturing %s: %v\n", truncateString(pageURL, 50), err)
+		// Clear progress bar line and print error
+		fmt.Print("\033[2K\r")
+		fmt.Printf("❌ Error: %s - %v\n\n", truncateString(pageURL, 40), err)
 		return nil
 	}
 
@@ -346,7 +398,6 @@ func capturePage(pageURL string) []string {
 		cmykPdfPath := filepath.Join(pdfOutputDir, filename+"_cmyk.pdf")
 		if err := convertToCMYKPDF(tempPdfPath, cmykPdfPath); err != nil {
 			atomic.AddInt64(&pdfStats.Errors, 1)
-			fmt.Printf("\n❌ CMYK conversion failed for %s: %v\n", truncateString(pageURL, 40), err)
 			os.Remove(tempPdfPath)
 			return extractedLinks
 		}
@@ -376,7 +427,6 @@ func capturePage(pageURL string) []string {
 		tiffPath := filepath.Join(pdfOutputDir, filename+"_cmyk.tiff")
 		if err := convertToCMYKTIFF(tempPngPath, tiffPath); err != nil {
 			atomic.AddInt64(&pdfStats.Errors, 1)
-			fmt.Printf("\n❌ CMYK TIFF conversion failed for %s: %v\n", truncateString(pageURL, 40), err)
 			os.Remove(tempPngPath)
 			return extractedLinks
 		}
@@ -384,19 +434,7 @@ func capturePage(pageURL string) []string {
 		atomic.AddInt64(&pdfStats.ScreenshotsGen, 1)
 	}
 
-	// Print appropriate message based on format
-	switch pdfCaptureFormat {
-	case CapturePDFOnly:
-		fmt.Printf("\n📑 Captured PDF: %s\n", truncateString(pageURL, 55))
-	case CaptureImagesOnly:
-		fmt.Printf("\n🖼️  Captured image: %s\n", truncateString(pageURL, 53))
-	case CaptureBoth:
-		fmt.Printf("\n📄 Captured: %s\n", truncateString(pageURL, 60))
-	case CaptureCMYKPDF:
-		fmt.Printf("\n🎨 Captured CMYK PDF: %s\n", truncateString(pageURL, 50))
-	case CaptureCMYKTIFF:
-		fmt.Printf("\n🎨 Captured CMYK TIFF: %s\n", truncateString(pageURL, 49))
-	}
+	// Progress bar shows current status, so no need for individual messages
 
 	// Process extracted links from the rendered DOM
 	if linksHTML != "" {
@@ -463,45 +501,6 @@ func capturePage(pageURL string) []string {
 					newURL := *parsedPage
 					newURL.RawQuery = newQ.Encode()
 					extractedLinks = append(extractedLinks, newURL.String())
-				}
-			}
-			
-			// For news/press release pages, generate year/month archive URLs
-			// BUT only if this is the BASE listing page (not already an archive page with year in path)
-			// Check that path doesn't already contain a year like /2024/ or /2025/
-			hasYearInPath := regexp.MustCompile(`/20\d{2}/`).MatchString(parsedPage.Path)
-			
-			if !hasYearInPath && (strings.Contains(parsedPage.Path, "news") || strings.Contains(parsedPage.Path, "press")) {
-				currentYear := time.Now().Year()
-				months := []string{"january", "february", "march", "april", "may", "june", 
-					"july", "august", "september", "october", "november", "december"}
-				
-				basePath := parsedPage.Path
-				if !strings.HasSuffix(basePath, "/") {
-					basePath = basePath + "/"
-				}
-				
-				// Generate URLs for current year and previous year
-				for year := currentYear; year >= currentYear-1; year-- {
-					for _, month := range months {
-						// Skip future months
-						if year == currentYear {
-							currentMonth := int(time.Now().Month())
-							monthIndex := -1
-							for i, m := range months {
-								if m == month {
-									monthIndex = i + 1
-									break
-								}
-							}
-							if monthIndex > currentMonth {
-								continue
-							}
-						}
-						archiveURL := fmt.Sprintf("%s://%s%s%d/%s/", 
-							parsedPage.Scheme, parsedPage.Host, basePath, year, month)
-						extractedLinks = append(extractedLinks, archiveURL)
-					}
 				}
 			}
 		}
@@ -578,8 +577,11 @@ func normalizeURL(link string) string {
 }
 
 func printPDFLiveStats(stop chan bool) {
-	ticker := time.NewTicker(3 * time.Second)
+	ticker := time.NewTicker(1 * time.Second) // Update more frequently
 	defer ticker.Stop()
+	
+	spinChars := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+	spinIdx := 0
 
 	for {
 		select {
@@ -587,57 +589,89 @@ func printPDFLiveStats(stop chan bool) {
 			return
 		case <-ticker.C:
 			elapsed := time.Since(pdfStartTime)
+			queued := atomic.LoadInt64(&pdfStats.PagesQueued)
 			visited := atomic.LoadInt64(&pdfStats.PagesVisited)
 			pdfs := atomic.LoadInt64(&pdfStats.PDFsGenerated)
 			screenshots := atomic.LoadInt64(&pdfStats.ScreenshotsGen)
 			errors := atomic.LoadInt64(&pdfStats.Errors)
+			
+			// Get current page
+			pdfCurrentMu.Lock()
+			currentPage := pdfCurrentPage
+			pdfCurrentMu.Unlock()
 
 			pagesPerSec := float64(visited) / elapsed.Seconds()
-
-			// Format stats based on capture mode
+			if elapsed.Seconds() < 1 {
+				pagesPerSec = 0
+			}
+			
+			// Build progress bar based on visited vs queued
+			barWidth := 20
+			var pct int64 = 0
+			if queued > 0 {
+				pct = visited * 100 / queued
+				if pct > 100 {
+					pct = 100
+				}
+			}
+			filled := int(pct) * barWidth / 100
+			if filled > barWidth {
+				filled = barWidth
+			}
+			
+			bar := ""
+			for i := 0; i < filled; i++ {
+				bar += "█"
+			}
+			for i := filled; i < barWidth; i++ {
+				bar += "░"
+			}
+			
+			// Spinner for activity
+			spinner := spinChars[spinIdx%len(spinChars)]
+			spinIdx++
+			
+			// Truncate current page URL for display
+			displayURL := currentPage
+			if len(displayURL) > 60 {
+				displayURL = "..." + displayURL[len(displayURL)-57:]
+			}
+			
+			// Clear lines and print status
+			fmt.Print("\033[2K\r") // Clear line 1
+			
+			// Format stats based on capture mode - show queue progress
+			pending := queued - visited
+			if pending < 0 {
+				pending = 0
+			}
+			
 			switch pdfCaptureFormat {
 			case CapturePDFOnly:
-				fmt.Printf("\r📊 [%s] Pages: %d | PDFs: %d | Errors: %d | %.1f p/s     ",
-					formatDuration(elapsed),
-					visited,
-					pdfs,
-					errors,
-					pagesPerSec,
-				)
+				fmt.Printf("%s \033[32m[%s]\033[0m %3d%% │ ⏱ %s │ 📑 %d captured │ ⏳ %d pending │ ❌ %d │ %.1f/s\n",
+					spinner, bar, pct, formatDuration(elapsed), pdfs, pending, errors, pagesPerSec)
 			case CaptureImagesOnly:
-				fmt.Printf("\r📊 [%s] Pages: %d | Images: %d | Errors: %d | %.1f p/s     ",
-					formatDuration(elapsed),
-					visited,
-					screenshots,
-					errors,
-					pagesPerSec,
-				)
+				fmt.Printf("%s \033[32m[%s]\033[0m %3d%% │ ⏱ %s │ 🖼️ %d captured │ ⏳ %d pending │ ❌ %d │ %.1f/s\n",
+					spinner, bar, pct, formatDuration(elapsed), screenshots, pending, errors, pagesPerSec)
 			case CaptureBoth:
-				fmt.Printf("\r📊 [%s] Pages: %d | PDFs: %d | Images: %d | Errors: %d | %.1f p/s     ",
-					formatDuration(elapsed),
-					visited,
-					pdfs,
-					screenshots,
-					errors,
-					pagesPerSec,
-				)
+				fmt.Printf("%s \033[32m[%s]\033[0m %3d%% │ ⏱ %s │ 📑 %d │ 🖼️ %d │ ⏳ %d pending │ ❌ %d │ %.1f/s\n",
+					spinner, bar, pct, formatDuration(elapsed), pdfs, screenshots, pending, errors, pagesPerSec)
 			case CaptureCMYKPDF:
-				fmt.Printf("\r📊 [%s] Pages: %d | CMYK PDFs: %d | Errors: %d | %.1f p/s     ",
-					formatDuration(elapsed),
-					visited,
-					pdfs,
-					errors,
-					pagesPerSec,
-				)
+				fmt.Printf("%s \033[32m[%s]\033[0m %3d%% │ ⏱ %s │ 🎨 %d CMYK │ ⏳ %d pending │ ❌ %d │ %.1f/s\n",
+					spinner, bar, pct, formatDuration(elapsed), pdfs, pending, errors, pagesPerSec)
 			case CaptureCMYKTIFF:
-				fmt.Printf("\r📊 [%s] Pages: %d | CMYK TIFFs: %d | Errors: %d | %.1f p/s     ",
-					formatDuration(elapsed),
-					visited,
-					screenshots,
-					errors,
-					pagesPerSec,
-				)
+				fmt.Printf("%s \033[32m[%s]\033[0m %3d%% │ ⏱ %s │ 🎨 %d TIFF │ ⏳ %d pending │ ❌ %d │ %.1f/s\n",
+					spinner, bar, pct, formatDuration(elapsed), screenshots, pending, errors, pagesPerSec)
 			}
+			
+			// Show current page on second line
+			fmt.Print("\033[2K") // Clear line 2
+			if displayURL != "" {
+				fmt.Printf("   \033[2m→ %s\033[0m", displayURL)
+			}
+			
+			// Move cursor up for next update
+			fmt.Print("\033[1A\r")
 		}
 	}
 }
@@ -646,6 +680,9 @@ func printPDFFinalStats() {
 	elapsed := time.Since(pdfStartTime)
 	wasCancelled := atomic.LoadInt32(&cancelRequested) == 1
 
+	// Clear any remaining progress bar output
+	fmt.Print("\033[2K\r") // Clear current line
+	fmt.Println()
 	fmt.Println()
 	fmt.Println()
 	fmt.Println("╔═══════════════════════════════════════════════════════════════════╗")
