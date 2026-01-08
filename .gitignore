@@ -43,3 +43,4 @@ results-*.csv
 # Exports
 pdf_captures*/
 page_captures_*/
+batch_captures_*/

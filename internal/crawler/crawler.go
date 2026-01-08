@@ -11,6 +11,7 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -991,4 +992,37 @@ func handleNetworkError(err error) {
 	case strings.Contains(errStr, "certificate"):
 		atomic.AddInt64(&stats.SSLErrors, 1)
 	}
+}
+
+func ExtractLinksFromFile(content string) {
+	fmt.Println("\n🔗 EXTRACTING LINKS FROM FILE...")
+	
+	// Regex for standard URLs
+	re := regexp.MustCompile(`https?://[^\s"<>]+`)
+	matches := re.FindAllString(content, -1)
+
+	if len(matches) == 0 {
+		fmt.Println("❌ No links found in the provided file content.")
+		return
+	}
+
+	resultFile := fmt.Sprintf("extracted-links-%d.txt", time.Now().Unix())
+	f, err := os.Create(resultFile)
+	if err != nil {
+		fmt.Printf("❌ Could not create file: %v\n", err)
+		return
+	}
+	defer f.Close()
+
+	uniqueLinks := make(map[string]bool)
+	count := 0
+	for _, link := range matches {
+		if !uniqueLinks[link] {
+			uniqueLinks[link] = true
+			fmt.Fprintln(f, link)
+			count++
+		}
+	}
+
+	fmt.Printf("✅ Success! Extracted %d unique links to: %s\n", count, resultFile)
 }

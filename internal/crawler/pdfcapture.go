@@ -139,6 +139,67 @@ func listenForCancel(stop chan bool) {
 	}
 }
 
+// RunBatchCapture processes a specific list of URLs for PDF generation
+func RunBatchCapture(links []string, cfg Config) {
+	// CRITICAL: Set these globals because capturePage needs them!
+	pdfVisited = sync.Map{}
+	pdfStats = PDFCaptureStats{}
+	pdfStartTime = time.Now()
+	pdfConcurrency = cfg.MaxConcurrency
+	pdfCaptureFormat = cfg.CaptureFormat // If this is 0, it panics!
+	
+	// Default to PDF if not set
+	if pdfCaptureFormat == 0 {
+		pdfCaptureFormat = CapturePDFOnly
+	}
+
+	// Fake a baseURL so the filename sanitizer doesn't crash
+	parsed, _ := url.Parse(links[0])
+	pdfBaseURL = parsed
+
+	timestamp := time.Now().Format("2006-01-02_150405")
+	pdfOutputDir = fmt.Sprintf("batch_captures_%s", timestamp)
+	os.MkdirAll(pdfOutputDir, 0755)
+
+	pdfSema = make(chan struct{}, pdfConcurrency)
+	
+	fmt.Printf("\n🚀 BATCH CAPTURE STARTING\n")
+	fmt.Printf("📦 Links to process: %d\n", len(links))
+	fmt.Printf("📁 Saving to: %s\n", pdfOutputDir)
+	fmt.Println("──────────────────────────────────────────────────")
+
+	for _, link := range links {
+		pdfWg.Add(1)
+		go func(pageURL string) {
+			defer pdfWg.Done()
+			
+			// Safety: Skip empty or weird strings
+			if pageURL == "" || !strings.HasPrefix(pageURL, "http") {
+				return
+			}
+
+			pdfSema <- struct{}{}
+			defer func() { <-pdfSema }()
+
+			// Wrap in a recovery so one bad URL doesn't kill the whole app
+			defer func() {
+				if r := recover(); r != nil {
+					atomic.AddInt64(&pdfStats.Errors, 1)
+				}
+			}()
+
+			capturePage(pageURL)
+			atomic.AddInt64(&pdfStats.PagesVisited, 1)
+			
+			done := atomic.LoadInt64(&pdfStats.PagesVisited)
+			fmt.Printf("\r✅ Progress: %d/%d pages handled...", done, len(links))
+		}(link)
+	}
+
+	pdfWg.Wait()
+	fmt.Printf("\n\n🎉 ALL DONE! Check the '%s' folder.\n", pdfOutputDir)
+}
+
 func crawlForPDF(link string) {
 	// Check if cancel requested
 	if atomic.LoadInt32(&cancelRequested) == 1 {
