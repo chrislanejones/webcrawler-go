@@ -218,6 +218,38 @@ When you select option 5, you'll see a sub-menu for output format:
 
 **Tip:** Press `c` + Enter at any time to stop crawling and keep the files captured so far.
 
+### Batch Mode (Process URL List)
+
+Instead of crawling a site, you can capture PDFs from a specific list of URLs by creating a `targets.txt` file:
+
+1. Create a file named `targets.txt` in the project directory
+2. Paste your URLs (one per line, or the crawler will extract them automatically)
+3. Run with batch mode enabled
+
+```
+╔═══════════════════════════════════════════════════════════════════╗
+║                   🕷️  WEB CRAWLER: BATCH MODE                     ║
+╚═══════════════════════════════════════════════════════════════════╝
+
+📂 Looking for 'targets.txt'...
+✅ Found 47 unique URLs in targets.txt
+
+🚀 Start generating PDFs? (y/n): y
+
+🚀 BATCH CAPTURE STARTING
+📦 Links to process: 47
+📁 Saving to: batch_captures_2024-01-15_143022
+──────────────────────────────────────────────────
+✅ Progress: 47/47 pages handled...
+
+🎉 ALL DONE! Check the 'batch_captures_2024-01-15_143022' folder.
+```
+
+This is useful when you:
+- Already have a list of specific URLs to capture
+- Want to re-capture pages that failed in a previous crawl
+- Need to process URLs from an external source (spreadsheet, sitemap, etc.)
+
 ### Handling Cloudflare Protection
 
 When Cloudflare blocks the main page:
