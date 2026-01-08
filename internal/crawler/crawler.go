@@ -30,6 +30,7 @@ const (
 	ModeBrokenLinks
 	ModeOversizedImages
 	ModePDFCapture
+	ModeSitemap
 )
 
 func (m SearchMode) String() string {
@@ -44,6 +45,8 @@ func (m SearchMode) String() string {
 		return "Oversized Image Check"
 	case ModePDFCapture:
 		return "Page Capture"
+	case ModeSitemap:
+		return "XML Sitemap Generator"
 	default:
 		return "Unknown"
 	}
@@ -76,6 +79,13 @@ func (c CaptureFormat) String() string {
 	}
 }
 
+type SitemapOptions struct {
+	Filename       string
+	ChangeFreq     string
+	Priority       float64
+	IncludeLastMod bool
+}
+
 type Config struct {
 	StartURL           string
 	AltEntryPoints     []string
@@ -89,6 +99,7 @@ type Config struct {
 	BlockedRetryPasses int
 	CaptureFormat      CaptureFormat
 	PathFilter         string // Only crawl URLs starting with this path (e.g., "/newsroom/")
+	SitemapOpts        SitemapOptions
 }
 
 type Stats struct {
@@ -202,6 +213,10 @@ func Start(cfg Config) {
 	case ModePDFCapture:
 		// PDF capture uses its own output handling
 		StartPDFCapture(cfg)
+		return
+	case ModeSitemap:
+		// Sitemap uses its own output handling
+		StartSitemapGeneration(cfg)
 		return
 	}
 

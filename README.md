@@ -10,7 +10,7 @@ A powerful Go-based web crawler with an interactive terminal wizard interface. F
 
 ## ✨ Features
 
-### 🎯 Five Powerful Modes
+### 🎯 Six Powerful Modes
 
 | Mode                     | Description                                                                |
 | ------------------------ | -------------------------------------------------------------------------- |
@@ -19,6 +19,7 @@ A powerful Go-based web crawler with an interactive terminal wizard interface. F
 | **💔 Broken Link Check** | Scan entire site for 404s, timeouts, and connection errors                 |
 | **🖼️ Oversized Images**  | Find images exceeding a specified file size threshold                      |
 | **📄 Page Capture**      | Generate PDFs, screenshots, or CMYK files for every page on the site       |
+| **🗺️ XML Sitemap**       | Generate a standards-compliant XML sitemap by crawling the entire site     |
 
 ### 🌲 Path Filtering (Crawl Subsections)
 
@@ -51,6 +52,19 @@ This is useful for:
 | **Both PDF + Images** | `.pdf` + `.png` | Chrome/Chromium      |
 | **CMYK PDF**          | `_cmyk.pdf`     | Chrome + Ghostscript |
 | **CMYK TIFF**         | `_cmyk.tiff`    | Chrome + ImageMagick |
+
+### 🗺️ XML Sitemap Generation
+
+Generate a standards-compliant XML sitemap for any website:
+
+| Option               | Description                                                                   |
+| -------------------- | ----------------------------------------------------------------------------- |
+| **Filename**         | Custom output filename (default: `sitemap.xml`)                               |
+| **Change Frequency** | How often pages change: always, hourly, daily, weekly, monthly, yearly, never |
+| **Priority**         | Page priority from 0.0 to 1.0 (default: 0.5)                                  |
+| **Last Modified**    | Optionally include `<lastmod>` dates from server headers                      |
+
+The generated sitemap follows the [sitemaps.org protocol](https://www.sitemaps.org/protocol.html) and is compatible with all major search engines.
 
 ### 🛡️ Cloudflare Bypass Strategies
 
@@ -148,11 +162,12 @@ The interactive wizard will guide you through the configuration.
    │  1. 🔗 Find a link on site (HTML, Word, PDF)            │
    │  2. 📝 Find a word/phrase on site (HTML, Word, PDF)     │
    │  3. 💔 Search for broken links                          │
-   │  4. 🖼️  Search for oversized images                      │
-   │  5. 📄 Generate PDF for every page (with screenshots)   │
+   │  4. 🖼️  Search for oversized images                     │
+   │  5. 📄 Generate PDF/Image for every page                │
+   │  6. 🗺️  Generate XML sitemap                            │
    └─────────────────────────────────────────────────────────┘
 
-   Enter choice (1-5): 2
+   Enter choice (1-6): 2
 
 📝 Enter the word or phrase to search for:
    → privacy policy
@@ -218,6 +233,70 @@ When you select option 5, you'll see a sub-menu for output format:
 
 **Tip:** Press `c` + Enter at any time to stop crawling and keep the files captured so far.
 
+### Sitemap Generation Mode (Option 6)
+
+When you select option 6, you can configure the sitemap output:
+
+```
+🗺️  Sitemap Generation Options
+
+   📄 Output filename (default: sitemap.xml): my-sitemap.xml
+
+   📅 Default change frequency:
+      1. always
+      2. hourly
+      3. daily
+      4. weekly (default)
+      5. monthly
+      6. yearly
+      7. never
+   Enter choice (1-7): 4
+   ✓ Change frequency: weekly
+
+   ⭐ Default priority (0.0-1.0, default 0.5): 0.8
+   ✓ Priority: 0.8
+
+   🕐 Include last modified date from server? (Y/n): y
+   ✓ Will include Last-Modified dates when available
+
+   📁 Output file: ./my-sitemap.xml
+
+┌─────────────────── SITEMAP GENERATION ───────────────────┐
+│  🌐 Target: https://example.com                          │
+│  📄 Output: my-sitemap.xml                               │
+│  📅 Freq:   weekly                                       │
+│  ⭐ Priority: 0.8                                        │
+└───────────────────────────────────────────────────────────┘
+
+🗺️  [2m 15s] Found: 142 | Checked: 140 | Errors: 2 | Blocked: 0 | 1.0 p/s
+
+📝 Generating sitemap XML...
+✅ Sitemap written to: my-sitemap.xml
+   📊 Total URLs: 140
+   📦 File size: 18.5 KB
+```
+
+The generated sitemap follows the standard XML format:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>https://example.com/</loc>
+    <lastmod>2024-01-15</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://example.com/about</loc>
+    <lastmod>2024-01-10</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  ...
+</urlset>
+```
+
 ### Batch Mode (Process URL List)
 
 Instead of crawling a site, you can capture PDFs from a specific list of URLs by creating a `targets.txt` file:
@@ -246,6 +325,7 @@ Instead of crawling a site, you can capture PDFs from a specific list of URLs by
 ```
 
 This is useful when you:
+
 - Already have a list of specific URLs to capture
 - Want to re-capture pages that failed in a previous crawl
 - Need to process URLs from an external source (spreadsheet, sitemap, etc.)
@@ -337,6 +417,33 @@ For page capture mode:
 ╚═══════════════════════════════════════════════════════════════════╝
 ```
 
+For sitemap generation mode:
+
+```
+╔═══════════════════════════════════════════════════════════════════╗
+║                  🗺️  SITEMAP GENERATION COMPLETE  🗺️               ║
+╠═══════════════════════════════════════════════════════════════════╣
+║                                                                   ║
+║  ⏱️  Total Time:           2m 15s                                  ║
+║  📄 URLs in Sitemap:       140                                    ║
+║  🔍 Pages Checked:         145                                    ║
+║  ❌ Errors:                3                                      ║
+║  🛡️  Blocked:               2                                      ║
+║  ⏭️  Skipped (filtered):    0                                      ║
+║                                                                   ║
+╠═══════════════════════════════════════════════════════════════════╣
+║                      📁 OUTPUT FILE                               ║
+╠═══════════════════════════════════════════════════════════════════╣
+║  📄 Filename:              sitemap.xml                            ║
+║  📅 Change Frequency:      weekly                                 ║
+║  ⭐ Priority:              0.5                                    ║
+║  🕐 Include Last Modified: Yes                                    ║
+║                                                                   ║
+╚═══════════════════════════════════════════════════════════════════╝
+
+⚡ Performance: 1.07 pages/second
+```
+
 ### CSV Results
 
 Results are saved to timestamped CSV files:
@@ -372,6 +479,10 @@ Files are saved directly to a timestamped folder (e.g., `pdf_captures_2024-01-15
 - `contact_us.pdf` / `contact_us.png` - Contact page
 - etc.
 
+**Sitemap Mode:**
+
+An XML file is generated (e.g., `sitemap.xml`) containing all discovered URLs with optional metadata.
+
 ---
 
 ## ⚙️ Configuration Options
@@ -385,6 +496,15 @@ Files are saved directly to a timestamped folder (e.g., `pdf_captures_2024-01-15
 | Image Size Threshold | 500KB   | Threshold for oversized image detection                  |
 | Path Filter          | (none)  | Only crawl URLs starting with this path (e.g., `/blog/`) |
 | Page Timeout         | 180s    | Max time to wait for a page to render (Page Capture)     |
+
+### Sitemap-Specific Options
+
+| Option          | Default       | Description                                     |
+| --------------- | ------------- | ----------------------------------------------- |
+| Filename        | `sitemap.xml` | Output filename for the generated sitemap       |
+| Change Freq     | `weekly`      | How often pages typically change                |
+| Priority        | `0.5`         | Default priority for all URLs (0.0 - 1.0)       |
+| Include LastMod | `true`        | Include Last-Modified dates from server headers |
 
 ---
 
@@ -435,7 +555,8 @@ webcrawler/
 └── internal/
     ├── crawler/
     │   ├── crawler.go           # Core crawling logic & statistics
-    │   └── pdfcapture.go        # Page capture with Chrome/PDF/CMYK
+    │   ├── pdfcapture.go        # Page capture with Chrome/PDF/CMYK
+    │   └── sitemap.go           # XML sitemap generation
     └── parser/
         ├── docx.go              # Word document parser
         └── pdf.go               # PDF text extractor
@@ -519,6 +640,15 @@ The crawler automatically backs off, but you can:
 ### SSL certificate errors
 
 The crawler skips certificate verification by default (`InsecureSkipVerify: true`). This handles self-signed certs but be aware of the security implications.
+
+### Empty sitemap generated
+
+If the sitemap has no URLs:
+
+- Check if the site is accessible and not blocking the crawler
+- Verify the path filter isn't too restrictive
+- The site might be heavily JavaScript-dependent (sitemap mode only crawls static HTML links)
+- Try with lower concurrency to avoid rate limiting
 
 ---
 

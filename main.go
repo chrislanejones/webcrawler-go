@@ -110,12 +110,13 @@ func main() {
 	fmt.Println("   │  3. 💔 Search for broken links                          │")
 	fmt.Println("   │  4. 🖼️  Search for oversized images                     │")
 	fmt.Println("   │  5. 📄 Generate PDF/Image for every page                │")
+	fmt.Println("   │  6. 🗺️  Generate XML sitemap                            │")
 	fmt.Println("   └─────────────────────────────────────────────────────────┘")
 	fmt.Println()
 
 	var mode crawler.SearchMode
 	for {
-		fmt.Print("   Enter choice (1-5): ")
+		fmt.Print("   Enter choice (1-6): ")
 		input, err := reader.ReadString('\n')
 		if err != nil {
 			fmt.Println("❌ Error reading input:", err)
@@ -123,8 +124,8 @@ func main() {
 		}
 
 		choice, err := strconv.Atoi(strings.TrimSpace(input))
-		if err != nil || choice < 1 || choice > 5 {
-			fmt.Println("   ❌ Please enter a number between 1 and 5")
+		if err != nil || choice < 1 || choice > 6 {
+			fmt.Println("   ❌ Please enter a number between 1 and 6")
 			continue
 		}
 
@@ -138,6 +139,7 @@ func main() {
 	var searchTarget string
 	var imageSizeThreshold int64 = 500
 	var captureFormat crawler.CaptureFormat = crawler.CaptureBoth
+	var sitemapOptions crawler.SitemapOptions
 
 	switch mode {
 	case crawler.ModeSearchLink:
@@ -211,6 +213,84 @@ func main() {
 			break
 		}
 		fmt.Println("   📁 Output folder: ./page_captures/")
+
+	case crawler.ModeSitemap:
+		fmt.Println("🗺️  Sitemap Generation Options")
+		fmt.Println()
+
+		// Ask for output filename
+		fmt.Print("   📄 Output filename (default: sitemap.xml): ")
+		filenameInput, _ := reader.ReadString('\n')
+		filename := strings.TrimSpace(filenameInput)
+		if filename == "" {
+			filename = "sitemap.xml"
+		}
+		if !strings.HasSuffix(filename, ".xml") {
+			filename = filename + ".xml"
+		}
+		sitemapOptions.Filename = filename
+
+		// Ask for default change frequency
+		fmt.Println()
+		fmt.Println("   📅 Default change frequency:")
+		fmt.Println("      1. always")
+		fmt.Println("      2. hourly")
+		fmt.Println("      3. daily")
+		fmt.Println("      4. weekly (default)")
+		fmt.Println("      5. monthly")
+		fmt.Println("      6. yearly")
+		fmt.Println("      7. never")
+		fmt.Print("   Enter choice (1-7): ")
+		freqInput, _ := reader.ReadString('\n')
+		freqChoice := strings.TrimSpace(freqInput)
+		switch freqChoice {
+		case "1":
+			sitemapOptions.ChangeFreq = "always"
+		case "2":
+			sitemapOptions.ChangeFreq = "hourly"
+		case "3":
+			sitemapOptions.ChangeFreq = "daily"
+		case "5":
+			sitemapOptions.ChangeFreq = "monthly"
+		case "6":
+			sitemapOptions.ChangeFreq = "yearly"
+		case "7":
+			sitemapOptions.ChangeFreq = "never"
+		default:
+			sitemapOptions.ChangeFreq = "weekly"
+		}
+		fmt.Printf("   ✓ Change frequency: %s\n", sitemapOptions.ChangeFreq)
+
+		// Ask for default priority
+		fmt.Println()
+		fmt.Print("   ⭐ Default priority (0.0-1.0, default 0.5): ")
+		priorityInput, _ := reader.ReadString('\n')
+		priorityStr := strings.TrimSpace(priorityInput)
+		if priorityStr == "" {
+			sitemapOptions.Priority = 0.5
+		} else {
+			if priority, err := strconv.ParseFloat(priorityStr, 64); err == nil && priority >= 0.0 && priority <= 1.0 {
+				sitemapOptions.Priority = priority
+			} else {
+				sitemapOptions.Priority = 0.5
+				fmt.Println("   ⚠️  Invalid priority, using default 0.5")
+			}
+		}
+		fmt.Printf("   ✓ Priority: %.1f\n", sitemapOptions.Priority)
+
+		// Ask whether to include lastmod
+		fmt.Println()
+		fmt.Print("   🕐 Include last modified date from server? (Y/n): ")
+		lastmodInput, _ := reader.ReadString('\n')
+		lastmodChoice := strings.ToLower(strings.TrimSpace(lastmodInput))
+		sitemapOptions.IncludeLastMod = lastmodChoice != "n" && lastmodChoice != "no"
+		if sitemapOptions.IncludeLastMod {
+			fmt.Println("   ✓ Will include Last-Modified dates when available")
+		} else {
+			fmt.Println("   ✓ Will not include last modified dates")
+		}
+
+		fmt.Printf("\n   📁 Output file: ./%s\n", sitemapOptions.Filename)
 	}
 
 	fmt.Println()
@@ -253,14 +333,12 @@ func main() {
 		BlockedRetryPasses: 3,
 		CaptureFormat:      captureFormat,
 		PathFilter:         pathFilter,
+		SitemapOpts:        sitemapOptions,
 	}
 
 	fmt.Println("┌─────────────────── LAUNCH CONFIG ───────────────────┐")
-	fmt.Printf("│  🌐 Target:       %-35s │\n", truncateString(siteURL, 35))
-	if pathFilter != "" {
-		fmt.Printf("│  🌲 Path filter:  %-35s │\n", truncateString(pathFilter, 35))
-	}
-	fmt.Printf("│  📊 Mode:         %-35s │\n", mode.String())
+	fmt.Printf("│  🌐 Target:       %-35s │\n", truncateString(config.StartURL, 35))
+	fmt.Printf("│  📋 Mode:         %-35s │\n", mode.String())
 	if searchTarget != "" {
 		fmt.Printf("│  🎯 Search for:   %-35s │\n", truncateString(searchTarget, 35))
 	}
