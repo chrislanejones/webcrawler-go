@@ -9,7 +9,10 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -35,17 +38,18 @@ type URLSet struct {
 
 // Sitemap-specific variables
 var (
-	sitemapURLs   sync.Map // stores discovered URLs with their metadata
-	sitemapConfig Config
-	sitemapWG     sync.WaitGroup
-	sitemapSema   chan struct{}
-	sitemapBase   *url.URL
-	sitemapStats  struct {
-		PagesFound    int64
-		PagesChecked  int64
-		ErrorCount    int64
-		BlockedCount  int64
-		SkippedCount  int64
+	sitemapURLs    sync.Map // stores URLs to include in sitemap
+	sitemapVisited sync.Map // tracks all visited URLs to avoid duplicates
+	sitemapConfig  Config
+	sitemapWG      sync.WaitGroup
+	sitemapSema    chan struct{}
+	sitemapBase    *url.URL
+	sitemapStats   struct {
+		PagesFound   int64
+		PagesChecked int64
+		ErrorCount   int64
+		BlockedCount int64
+		SkippedCount int64
 	}
 	sitemapStart time.Time
 )
@@ -59,8 +63,16 @@ type SitemapEntry struct {
 // StartSitemapGeneration initiates the sitemap crawl and generation
 func StartSitemapGeneration(cfg Config) {
 	sitemapURLs = sync.Map{}
+	sitemapVisited = sync.Map{}
 	sitemapConfig = cfg
 	sitemapStart = time.Now()
+	sitemapStats = struct {
+		PagesFound   int64
+		PagesChecked int64
+		ErrorCount   int64
+		BlockedCount int64
+		SkippedCount int64
+	}{}
 
 	sitemapSema = make(chan struct{}, cfg.MaxConcurrency)
 
@@ -133,43 +145,60 @@ func crawlForSitemap(link string) {
 		return
 	}
 
-	// Remove fragment
+	// Remove fragment and query for normalization
 	parsedURL.Fragment = ""
 	normalizedURL := parsedURL.String()
 
-	// Check if already visited
-	if _, loaded := sitemapURLs.LoadOrStore(normalizedURL, &SitemapEntry{URL: normalizedURL}); loaded {
+	// Check if already visited using separate visited map
+	if _, loaded := sitemapVisited.LoadOrStore(normalizedURL, true); loaded {
 		return
 	}
 
-	// Apply path filter if set
+	// Check path filter to determine if URL should be in sitemap
+	includeInSitemap := true
 	if sitemapConfig.PathFilter != "" {
-		if !strings.HasPrefix(parsedURL.Path, sitemapConfig.PathFilter) &&
-			parsedURL.Path+"/" != sitemapConfig.PathFilter {
-			sitemapURLs.Delete(normalizedURL)
-			atomic.AddInt64(&sitemapStats.SkippedCount, 1)
-			return
+		pathWithSlash := parsedURL.Path
+		if !strings.HasSuffix(pathWithSlash, "/") {
+			pathWithSlash = pathWithSlash + "/"
 		}
+		filterPath := sitemapConfig.PathFilter
+		if !strings.HasSuffix(filterPath, "/") {
+			filterPath = filterPath + "/"
+		}
+
+		// Check if the URL path starts with the filter path
+		if !strings.HasPrefix(pathWithSlash, filterPath) && pathWithSlash != filterPath {
+			includeInSitemap = false
+			atomic.AddInt64(&sitemapStats.SkippedCount, 1)
+		}
+	}
+
+	// Only add to sitemap URLs if it matches the filter
+	if includeInSitemap {
+		sitemapURLs.Store(normalizedURL, &SitemapEntry{URL: normalizedURL})
 	}
 
 	atomic.AddInt64(&sitemapStats.PagesFound, 1)
 
 	sitemapWG.Add(1)
-	go func() {
+	go func(shouldInclude bool) {
 		defer sitemapWG.Done()
 		sitemapSema <- struct{}{}
 		defer func() { <-sitemapSema }()
 
-		fetchForSitemap(normalizedURL)
-	}()
+		fetchForSitemap(normalizedURL, shouldInclude)
+	}(includeInSitemap)
 }
 
-func fetchForSitemap(link string) {
+func fetchForSitemap(link string, includeInSitemap bool) {
 	atomic.AddInt64(&sitemapStats.PagesChecked, 1)
 
 	req, err := http.NewRequest("GET", link, nil)
 	if err != nil {
 		atomic.AddInt64(&sitemapStats.ErrorCount, 1)
+		if includeInSitemap {
+			sitemapURLs.Delete(link)
+		}
 		return
 	}
 
@@ -182,6 +211,9 @@ func fetchForSitemap(link string) {
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		atomic.AddInt64(&sitemapStats.ErrorCount, 1)
+		if includeInSitemap {
+			sitemapURLs.Delete(link)
+		}
 		return
 	}
 	defer resp.Body.Close()
@@ -189,37 +221,39 @@ func fetchForSitemap(link string) {
 	// Handle blocked/error responses
 	if resp.StatusCode == 403 || resp.StatusCode == 503 || resp.StatusCode == 429 {
 		atomic.AddInt64(&sitemapStats.BlockedCount, 1)
-		sitemapURLs.Delete(link)
+		if includeInSitemap {
+			sitemapURLs.Delete(link)
+		}
 		return
 	}
 
 	if resp.StatusCode >= 400 {
 		atomic.AddInt64(&sitemapStats.ErrorCount, 1)
-		sitemapURLs.Delete(link)
+		if includeInSitemap {
+			sitemapURLs.Delete(link)
+		}
 		return
 	}
 
 	// Only include HTML pages in sitemap
 	contentType := resp.Header.Get("Content-Type")
 	if !strings.Contains(contentType, "text/html") {
-		sitemapURLs.Delete(link)
+		if includeInSitemap {
+			sitemapURLs.Delete(link)
+		}
 		return
 	}
 
 	// Get Last-Modified header if requested
-	var lastMod string
-	if sitemapConfig.SitemapOpts.IncludeLastMod {
+	if includeInSitemap && sitemapConfig.SitemapOpts.IncludeLastMod {
 		if lm := resp.Header.Get("Last-Modified"); lm != "" {
 			if t, err := time.Parse(time.RFC1123, lm); err == nil {
-				lastMod = t.Format("2006-01-02")
+				if entry, ok := sitemapURLs.Load(link); ok {
+					e := entry.(*SitemapEntry)
+					e.LastMod = t.Format("2006-01-02")
+				}
 			}
 		}
-	}
-
-	// Update the entry with lastmod
-	if entry, ok := sitemapURLs.Load(link); ok {
-		e := entry.(*SitemapEntry)
-		e.LastMod = lastMod
 	}
 
 	// Read body
@@ -238,10 +272,12 @@ func fetchForSitemap(link string) {
 		return
 	}
 
-	// Check for bot protection
-	if detectBotProtection(string(bodyBytes)) {
+	// Check for bot protection - use sitemap-specific detection that's less aggressive
+	if detectSitemapBotProtection(string(bodyBytes)) {
 		atomic.AddInt64(&sitemapStats.BlockedCount, 1)
-		sitemapURLs.Delete(link)
+		if includeInSitemap {
+			sitemapURLs.Delete(link)
+		}
 		return
 	}
 
@@ -249,11 +285,56 @@ func fetchForSitemap(link string) {
 	extractLinksForSitemap(bodyBytes, link)
 }
 
+// detectSitemapBotProtection is less aggressive than the main crawler's detection
+// It only triggers on actual challenge pages, not just the presence of CDN names
+func detectSitemapBotProtection(body string) bool {
+	bodyLower := strings.ToLower(body)
+
+	// Only trigger on actual challenge page patterns
+	challengePatterns := []struct {
+		required []string // ALL must be present
+	}{
+		{[]string{"checking your browser", "please wait"}},
+		{[]string{"just a moment", "enable javascript"}},
+		{[]string{"ddos protection", "please wait"}},
+		{[]string{"attention required", "cloudflare"}},
+		{[]string{"sorry, you have been blocked"}},
+		{[]string{"access denied", "you don't have permission"}},
+		{[]string{"verify you are human", "captcha"}},
+		{[]string{"security check", "please complete"}},
+	}
+
+	for _, pattern := range challengePatterns {
+		allMatch := true
+		for _, required := range pattern.required {
+			if !strings.Contains(bodyLower, required) {
+				allMatch = false
+				break
+			}
+		}
+		if allMatch {
+			return true
+		}
+	}
+
+	// Check for very short pages that are likely challenge pages
+	if len(body) < 2000 {
+		if strings.Contains(bodyLower, "checking your browser") ||
+			strings.Contains(bodyLower, "please enable javascript and cookies") {
+			return true
+		}
+	}
+
+	return false
+}
+
 func extractLinksForSitemap(body []byte, sourceURL string) {
 	doc, err := html.Parse(bytes.NewReader(body))
 	if err != nil {
 		return
 	}
+
+	var extractedLinks []string
 
 	var f func(*html.Node)
 	f = func(n *html.Node) {
@@ -310,11 +391,7 @@ func extractLinksForSitemap(body []byte, sourceURL string) {
 						continue
 					}
 
-					// Add small delay to be polite
-					time.Sleep(30 * time.Millisecond)
-
-					// Crawl the discovered URL
-					crawlForSitemap(resolved.String())
+					extractedLinks = append(extractedLinks, resolved.String())
 				}
 			}
 		}
@@ -323,6 +400,144 @@ func extractLinksForSitemap(body []byte, sourceURL string) {
 		}
 	}
 	f(doc)
+
+	// Generate archive URLs if this looks like a news/archive section
+	parsedSource, _ := url.Parse(sourceURL)
+	if parsedSource != nil {
+		archiveLinks := generateArchiveURLs(parsedSource)
+		extractedLinks = append(extractedLinks, archiveLinks...)
+
+		// Also try pagination patterns for listing pages
+		paginationLinks := generatePaginationURLs(parsedSource)
+		extractedLinks = append(extractedLinks, paginationLinks...)
+	}
+
+	// Crawl all extracted links
+	for _, link := range extractedLinks {
+		time.Sleep(30 * time.Millisecond)
+		crawlForSitemap(link)
+	}
+}
+
+// generateArchiveURLs creates year/month archive URLs for news sections
+func generateArchiveURLs(parsedURL *url.URL) []string {
+	var urls []string
+
+	path := parsedURL.Path
+	pathLower := strings.ToLower(path)
+
+	// Check if this looks like a news/archive section
+	isNewsSection := strings.Contains(pathLower, "news") ||
+		strings.Contains(pathLower, "press") ||
+		strings.Contains(pathLower, "release") ||
+		strings.Contains(pathLower, "archive") ||
+		strings.Contains(pathLower, "blog") ||
+		strings.Contains(pathLower, "article")
+
+	if !isNewsSection {
+		return urls
+	}
+
+	// Check if path contains a year (e.g., /news/2025/)
+	yearPattern := regexp.MustCompile(`/(\d{4})/?$`)
+	if matches := yearPattern.FindStringSubmatch(path); len(matches) > 1 {
+		year, _ := strconv.Atoi(matches[1])
+
+		// Generate month URLs
+		months := []string{
+			"january", "february", "march", "april", "may", "june",
+			"july", "august", "september", "october", "november", "december",
+		}
+
+		basePath := strings.TrimSuffix(path, "/")
+		for _, month := range months {
+			monthURL := fmt.Sprintf("%s://%s%s/%s/", parsedURL.Scheme, parsedURL.Host, basePath, month)
+			urls = append(urls, monthURL)
+		}
+
+		// Also generate previous year if current year
+		currentYear := time.Now().Year()
+		if year == currentYear {
+			prevYearPath := strings.Replace(path, fmt.Sprintf("/%d", year), fmt.Sprintf("/%d", year-1), 1)
+			prevYearURL := fmt.Sprintf("%s://%s%s", parsedURL.Scheme, parsedURL.Host, prevYearPath)
+			urls = append(urls, prevYearURL)
+		}
+	}
+
+	// Check if path ends with a month, generate sibling months
+	monthPattern := regexp.MustCompile(`/(\d{4})/(january|february|march|april|may|june|july|august|september|october|november|december)/?$`)
+	if matches := monthPattern.FindStringSubmatch(pathLower); len(matches) > 2 {
+		year := matches[1]
+		basePath := path[:strings.LastIndex(strings.ToLower(path), matches[2])]
+
+		months := []string{
+			"january", "february", "march", "april", "may", "june",
+			"july", "august", "september", "october", "november", "december",
+		}
+
+		for _, month := range months {
+			monthURL := fmt.Sprintf("%s://%s%s%s/", parsedURL.Scheme, parsedURL.Host, basePath, month)
+			urls = append(urls, monthURL)
+		}
+
+		// Also try previous year
+		if yearInt, err := strconv.Atoi(year); err == nil {
+			prevYearBase := strings.Replace(basePath, year, strconv.Itoa(yearInt-1), 1)
+			for _, month := range months {
+				monthURL := fmt.Sprintf("%s://%s%s%s/", parsedURL.Scheme, parsedURL.Host, prevYearBase, month)
+				urls = append(urls, monthURL)
+			}
+		}
+	}
+
+	// If no year in path but it's a news section, try adding current and recent years
+	if !yearPattern.MatchString(path) && !monthPattern.MatchString(pathLower) {
+		basePath := strings.TrimSuffix(path, "/")
+		currentYear := time.Now().Year()
+
+		for y := currentYear; y >= currentYear-2; y-- {
+			yearURL := fmt.Sprintf("%s://%s%s/%d/", parsedURL.Scheme, parsedURL.Host, basePath, y)
+			urls = append(urls, yearURL)
+		}
+	}
+
+	return urls
+}
+
+// generatePaginationURLs creates paginated URLs for listing pages
+func generatePaginationURLs(parsedURL *url.URL) []string {
+	var urls []string
+
+	// Check if this is a listing page (ends with / or has no file extension)
+	path := parsedURL.Path
+	isListingPage := strings.HasSuffix(path, "/") ||
+		(!strings.Contains(filepath.Base(path), ".") && path != "")
+
+	if !isListingPage {
+		return urls
+	}
+
+	// Try ?page=N pattern
+	if parsedURL.Query().Get("page") == "" {
+		for i := 2; i <= 10; i++ {
+			newQ := parsedURL.Query()
+			newQ.Set("page", strconv.Itoa(i))
+			newURL := *parsedURL
+			newURL.RawQuery = newQ.Encode()
+			urls = append(urls, newURL.String())
+		}
+	}
+
+	// Try /page/N pattern
+	if !strings.Contains(path, "/page/") {
+		basePath := strings.TrimSuffix(path, "/")
+		for i := 2; i <= 10; i++ {
+			pageURL := fmt.Sprintf("%s://%s%s/page/%d/", parsedURL.Scheme, parsedURL.Host, basePath, i)
+			urls = append(urls, pageURL)
+		}
+	}
+
+	return urls
 }
 
 func generateSitemapFile(cfg Config) {

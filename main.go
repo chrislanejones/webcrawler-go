@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"crypto/tls"
 	"fmt"
 	"net/http"
@@ -11,15 +10,15 @@ import (
 	"strings"
 	"time"
 	"webcrawler/internal/crawler"
+
+	"github.com/charmbracelet/huh"
 )
 
 func main() {
-	reader := bufio.NewReader(os.Stdin)
-
 	fmt.Println()
 	fmt.Println("╔═══════════════════════════════════════════════════════════════════╗")
-	fmt.Println("║                   🕷️  Web Crawler Wizard  🕷️                       ║")
-	fmt.Println("║                        v2.1 - Cloudflare Buster                   ║")
+	fmt.Println("║                   🕷️  Web Crawler Wizard  🕷️                      ║")
+	fmt.Println("║                              v2.5                                 ║")
 	fmt.Println("╚═══════════════════════════════════════════════════════════════════╝")
 	fmt.Println()
 
@@ -27,16 +26,26 @@ func main() {
 	var siteURL string
 	var altEntryPoints []string
 	var pathFilter string
+	var usePathFilter bool
 
 	for {
-		fmt.Print("🌐 What site do you want to check?\n   (Tip: Include a path like /newsroom/ to only crawl that section)\n   → ")
-		input, err := reader.ReadString('\n')
+		form := huh.NewForm(
+			huh.NewGroup(
+				huh.NewInput().
+					Title("What site do you want to check?").
+					Description("Tip: Include a path like /newsroom/ to only crawl that section").
+					Placeholder("https://example.com").
+					Value(&siteURL),
+			),
+		)
+
+		err := form.Run()
 		if err != nil {
-			fmt.Println("❌ Error reading input:", err)
-			continue
+			fmt.Println("Error:", err)
+			os.Exit(1)
 		}
 
-		siteURL = strings.TrimSpace(input)
+		siteURL = strings.TrimSpace(siteURL)
 
 		if !strings.HasPrefix(siteURL, "http://") && !strings.HasPrefix(siteURL, "https://") {
 			siteURL = "https://" + siteURL
@@ -45,6 +54,7 @@ func main() {
 		parsedURL, err := url.Parse(siteURL)
 		if err != nil || parsedURL.Host == "" {
 			fmt.Println("❌ Invalid URL. Please enter a valid website address.")
+			siteURL = ""
 			continue
 		}
 
@@ -55,15 +65,26 @@ func main() {
 			if !strings.HasSuffix(pathFilter, "/") {
 				pathFilter = pathFilter + "/"
 			}
-			fmt.Printf("\n   🌲 Detected path: %s\n", pathFilter)
-			fmt.Print("   📍 Only crawl pages under this path? (Y/n): ")
-			confirmPath, _ := reader.ReadString('\n')
-			confirmPath = strings.ToLower(strings.TrimSpace(confirmPath))
-			if confirmPath == "n" || confirmPath == "no" {
+
+			confirmForm := huh.NewForm(
+				huh.NewGroup(
+					huh.NewConfirm().
+						Title(fmt.Sprintf("Only crawl pages under %s?", pathFilter)).
+						Description("Detected path filter in URL").
+						Value(&usePathFilter),
+				),
+			)
+
+			if err := confirmForm.Run(); err != nil {
+				fmt.Println("Error:", err)
+				os.Exit(1)
+			}
+
+			if !usePathFilter {
 				pathFilter = ""
-				fmt.Println("   ✓ Will crawl entire site")
+				fmt.Println("◇ Will crawl entire site")
 			} else {
-				fmt.Printf("   ✓ Will only crawl pages under %s\n", pathFilter)
+				fmt.Printf("◇ Will only crawl pages under %s\n", pathFilter)
 			}
 		}
 
@@ -81,7 +102,7 @@ func main() {
 			fmt.Println("   💡 Let's try some alternative entry points...")
 			fmt.Println()
 
-			altEntryPoints = suggestAndTestAlternatives(siteURL, reader)
+			altEntryPoints = suggestAndTestAlternatives(siteURL)
 
 			if len(altEntryPoints) > 0 {
 				fmt.Printf("\n   ✅ Found %d working entry point(s)!\n", len(altEntryPoints))
@@ -92,9 +113,23 @@ func main() {
 			}
 		}
 
-		fmt.Print("\n⚠️  Connection issues detected. Try anyway? (y/n): ")
-		confirm, _ := reader.ReadString('\n')
-		if strings.ToLower(strings.TrimSpace(confirm)) == "y" {
+		var tryAnyway bool
+		confirmForm := huh.NewForm(
+			huh.NewGroup(
+				huh.NewConfirm().
+					Title("Connection issues detected. Try anyway?").
+					Affirmative("Yes").
+					Negative("No").
+					Value(&tryAnyway),
+			),
+		)
+
+		if err := confirmForm.Run(); err != nil {
+			fmt.Println("Error:", err)
+			os.Exit(1)
+		}
+
+		if tryAnyway {
 			break
 		}
 	}
@@ -102,36 +137,29 @@ func main() {
 	fmt.Println()
 
 	// Step 2: Get the search mode
-	fmt.Println("📋 What should I check the site for?")
-	fmt.Println()
-	fmt.Println("   ┌─────────────────────────────────────────────────────────┐")
-	fmt.Println("   │  1. 🔗 Find a link on site (HTML, Word, PDF)            │")
-	fmt.Println("   │  2. 📝 Find a word/phrase on site (HTML, Word, PDF)     │")
-	fmt.Println("   │  3. 💔 Search for broken links                          │")
-	fmt.Println("   │  4. 🖼️  Search for oversized images                     │")
-	fmt.Println("   │  5. 📄 Generate PDF/Image for every page                │")
-	fmt.Println("   │  6. 🗺️  Generate XML sitemap                            │")
-	fmt.Println("   └─────────────────────────────────────────────────────────┘")
-	fmt.Println()
+	var modeChoice int
+	modeForm := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[int]().
+				Title("What should I check the site for?").
+				Options(
+					huh.NewOption("🔗 Find a link on site (HTML, Word, PDF)", 1),
+					huh.NewOption("📝 Find a word/phrase on site (HTML, Word, PDF)", 2),
+					huh.NewOption("💔 Search for broken links", 3),
+					huh.NewOption("🖼️  Search for oversized images", 4),
+					huh.NewOption("📄 Generate PDF/Image for every page", 5),
+					huh.NewOption("🗺️  Generate XML sitemap", 6),
+				).
+				Value(&modeChoice),
+		),
+	)
 
-	var mode crawler.SearchMode
-	for {
-		fmt.Print("   Enter choice (1-6): ")
-		input, err := reader.ReadString('\n')
-		if err != nil {
-			fmt.Println("❌ Error reading input:", err)
-			continue
-		}
-
-		choice, err := strconv.Atoi(strings.TrimSpace(input))
-		if err != nil || choice < 1 || choice > 6 {
-			fmt.Println("   ❌ Please enter a number between 1 and 6")
-			continue
-		}
-
-		mode = crawler.SearchMode(choice)
-		break
+	if err := modeForm.Run(); err != nil {
+		fmt.Println("Error:", err)
+		os.Exit(1)
 	}
+
+	mode := crawler.SearchMode(modeChoice)
 
 	fmt.Println()
 
@@ -143,85 +171,163 @@ func main() {
 
 	switch mode {
 	case crawler.ModeSearchLink:
-		fmt.Print("🔗 Enter the link to search for:\n   → ")
-		input, _ := reader.ReadString('\n')
-		searchTarget = strings.TrimSpace(input)
-		if searchTarget == "" {
-			fmt.Println("❌ Link cannot be empty")
+		form := huh.NewForm(
+			huh.NewGroup(
+				huh.NewInput().
+					Title("Enter the link to search for").
+					Placeholder("https://example.com/page").
+					Value(&searchTarget).
+					Validate(func(s string) error {
+						if strings.TrimSpace(s) == "" {
+							return fmt.Errorf("link cannot be empty")
+						}
+						return nil
+					}),
+			),
+		)
+
+		if err := form.Run(); err != nil {
+			fmt.Println("Error:", err)
 			os.Exit(1)
 		}
+		searchTarget = strings.TrimSpace(searchTarget)
 
 	case crawler.ModeSearchWord:
-		fmt.Print("📝 Enter the word or phrase to search for:\n   → ")
-		input, _ := reader.ReadString('\n')
-		searchTarget = strings.TrimSpace(input)
-		if searchTarget == "" {
-			fmt.Println("❌ Search term cannot be empty")
+		form := huh.NewForm(
+			huh.NewGroup(
+				huh.NewInput().
+					Title("Enter the word or phrase to search for").
+					Placeholder("search term").
+					Value(&searchTarget).
+					Validate(func(s string) error {
+						if strings.TrimSpace(s) == "" {
+							return fmt.Errorf("search term cannot be empty")
+						}
+						return nil
+					}),
+			),
+		)
+
+		if err := form.Run(); err != nil {
+			fmt.Println("Error:", err)
+			os.Exit(1)
+		}
+		searchTarget = strings.TrimSpace(searchTarget)
+
+	case crawler.ModeBrokenLinks:
+		fmt.Println("◇ Will search for broken links (404s, timeouts, connection errors)")
+
+	case crawler.ModeOversizedImages:
+		var sizeStr string
+		form := huh.NewForm(
+			huh.NewGroup(
+				huh.NewInput().
+					Title("Max image size in KB").
+					Description("Images larger than this will be flagged").
+					Placeholder("500").
+					Value(&sizeStr),
+			),
+		)
+
+		if err := form.Run(); err != nil {
+			fmt.Println("Error:", err)
 			os.Exit(1)
 		}
 
-	case crawler.ModeBrokenLinks:
-		fmt.Println("💔 Will search for broken links (404s, timeouts, connection errors)")
-
-	case crawler.ModeOversizedImages:
-		fmt.Print("🖼️  Enter max image size in KB (default 500): ")
-		input, _ := reader.ReadString('\n')
-		input = strings.TrimSpace(input)
-		if input != "" {
-			if size, err := strconv.ParseInt(input, 10, 64); err == nil && size > 0 {
+		if sizeStr != "" {
+			if size, err := strconv.ParseInt(strings.TrimSpace(sizeStr), 10, 64); err == nil && size > 0 {
 				imageSizeThreshold = size
 			}
 		}
-		fmt.Printf("   Looking for images larger than %dKB\n", imageSizeThreshold)
+		fmt.Printf("◇ Looking for images larger than %dKB\n", imageSizeThreshold)
 
 	case crawler.ModePDFCapture:
-		fmt.Println("📄 What format do you want to capture?")
-		fmt.Println()
-		fmt.Println("   ┌─────────────────────────────────────────────────────────┐")
-		fmt.Println("   │  a. 📑 PDF only                                         │")
-		fmt.Println("   │  b. 🖼️  Images only (PNG)                                │")
-		fmt.Println("   │  c. 📑🖼️  Both PDF + Images                              │")
-		fmt.Println("   │  d. 🎨 CMYK PDF (for print) *                            │")
-		fmt.Println("   │  e. 🎨 CMYK TIFF (for InDesign) *                        │")
-		fmt.Println("   └─────────────────────────────────────────────────────────┘")
-		fmt.Println("   * Requires Ghostscript (d) or ImageMagick (e) installed")
-		fmt.Println()
-		for {
-			fmt.Print("   Enter choice (a/b/c/d/e): ")
-			formatInput, _ := reader.ReadString('\n')
-			formatChoice := strings.ToLower(strings.TrimSpace(formatInput))
-			switch formatChoice {
-			case "a":
-				captureFormat = crawler.CapturePDFOnly
-				fmt.Println("   📑 Will generate PDFs only")
-			case "b":
-				captureFormat = crawler.CaptureImagesOnly
-				fmt.Println("   🖼️  Will generate PNG screenshots only")
-			case "c":
-				captureFormat = crawler.CaptureBoth
-				fmt.Println("   📑🖼️  Will generate both PDFs and PNG screenshots")
-			case "d":
-				captureFormat = crawler.CaptureCMYKPDF
-				fmt.Println("   🎨 Will generate CMYK PDFs (requires Ghostscript)")
-			case "e":
-				captureFormat = crawler.CaptureCMYKTIFF
-				fmt.Println("   🎨 Will generate CMYK TIFFs (requires ImageMagick)")
-			default:
-				fmt.Println("   ❌ Please enter a, b, c, d, or e")
-				continue
-			}
-			break
+		var formatChoice string
+		form := huh.NewForm(
+			huh.NewGroup(
+				huh.NewSelect[string]().
+					Title("What format do you want to capture?").
+					Options(
+						huh.NewOption("📑 PDF only", "pdf"),
+						huh.NewOption("🖼️  Images only (PNG)", "images"),
+						huh.NewOption("📑🖼️  Both PDF + Images", "both"),
+						huh.NewOption("🎨 CMYK PDF (for print) - requires Ghostscript", "cmyk-pdf"),
+						huh.NewOption("🎨 CMYK TIFF (for InDesign) - requires ImageMagick", "cmyk-tiff"),
+					).
+					Value(&formatChoice),
+			),
+		)
+
+		if err := form.Run(); err != nil {
+			fmt.Println("Error:", err)
+			os.Exit(1)
 		}
-		fmt.Println("   📁 Output folder: ./page_captures/")
+
+		switch formatChoice {
+		case "pdf":
+			captureFormat = crawler.CapturePDFOnly
+			fmt.Println("◇ Will generate PDFs only")
+		case "images":
+			captureFormat = crawler.CaptureImagesOnly
+			fmt.Println("◇ Will generate PNG screenshots only")
+		case "both":
+			captureFormat = crawler.CaptureBoth
+			fmt.Println("◇ Will generate both PDFs and PNG screenshots")
+		case "cmyk-pdf":
+			captureFormat = crawler.CaptureCMYKPDF
+			fmt.Println("◇ Will generate CMYK PDFs (requires Ghostscript)")
+		case "cmyk-tiff":
+			captureFormat = crawler.CaptureCMYKTIFF
+			fmt.Println("◇ Will generate CMYK TIFFs (requires ImageMagick)")
+		}
+		fmt.Println("◇ Output folder: ./page_captures/")
 
 	case crawler.ModeSitemap:
-		fmt.Println("🗺️  Sitemap Generation Options")
-		fmt.Println()
+		var filename string
+		var freqChoice string
+		var priorityStr string
+		var includeLastMod bool
 
-		// Ask for output filename
-		fmt.Print("   📄 Output filename (default: sitemap.xml): ")
-		filenameInput, _ := reader.ReadString('\n')
-		filename := strings.TrimSpace(filenameInput)
+		form := huh.NewForm(
+			huh.NewGroup(
+				huh.NewInput().
+					Title("Output filename").
+					Placeholder("sitemap.xml").
+					Value(&filename),
+			),
+			huh.NewGroup(
+				huh.NewSelect[string]().
+					Title("Default change frequency").
+					Options(
+						huh.NewOption("always", "always"),
+						huh.NewOption("hourly", "hourly"),
+						huh.NewOption("daily", "daily"),
+						huh.NewOption("weekly (default)", "weekly"),
+						huh.NewOption("monthly", "monthly"),
+						huh.NewOption("yearly", "yearly"),
+						huh.NewOption("never", "never"),
+					).
+					Value(&freqChoice),
+			),
+			huh.NewGroup(
+				huh.NewInput().
+					Title("Default priority (0.0-1.0)").
+					Placeholder("0.5").
+					Value(&priorityStr),
+			),
+			huh.NewGroup(
+				huh.NewConfirm().
+					Title("Include last modified date from server?").
+					Value(&includeLastMod),
+			),
+		)
+
+		if err := form.Run(); err != nil {
+			fmt.Println("Error:", err)
+			os.Exit(1)
+		}
+
+		// Process filename
 		if filename == "" {
 			filename = "sitemap.xml"
 		}
@@ -230,89 +336,71 @@ func main() {
 		}
 		sitemapOptions.Filename = filename
 
-		// Ask for default change frequency
-		fmt.Println()
-		fmt.Println("   📅 Default change frequency:")
-		fmt.Println("      1. always")
-		fmt.Println("      2. hourly")
-		fmt.Println("      3. daily")
-		fmt.Println("      4. weekly (default)")
-		fmt.Println("      5. monthly")
-		fmt.Println("      6. yearly")
-		fmt.Println("      7. never")
-		fmt.Print("   Enter choice (1-7): ")
-		freqInput, _ := reader.ReadString('\n')
-		freqChoice := strings.TrimSpace(freqInput)
-		switch freqChoice {
-		case "1":
-			sitemapOptions.ChangeFreq = "always"
-		case "2":
-			sitemapOptions.ChangeFreq = "hourly"
-		case "3":
-			sitemapOptions.ChangeFreq = "daily"
-		case "5":
-			sitemapOptions.ChangeFreq = "monthly"
-		case "6":
-			sitemapOptions.ChangeFreq = "yearly"
-		case "7":
-			sitemapOptions.ChangeFreq = "never"
-		default:
-			sitemapOptions.ChangeFreq = "weekly"
+		// Process frequency
+		if freqChoice == "" {
+			freqChoice = "weekly"
 		}
-		fmt.Printf("   ✓ Change frequency: %s\n", sitemapOptions.ChangeFreq)
+		sitemapOptions.ChangeFreq = freqChoice
 
-		// Ask for default priority
-		fmt.Println()
-		fmt.Print("   ⭐ Default priority (0.0-1.0, default 0.5): ")
-		priorityInput, _ := reader.ReadString('\n')
-		priorityStr := strings.TrimSpace(priorityInput)
+		// Process priority
 		if priorityStr == "" {
 			sitemapOptions.Priority = 0.5
 		} else {
-			if priority, err := strconv.ParseFloat(priorityStr, 64); err == nil && priority >= 0.0 && priority <= 1.0 {
+			if priority, err := strconv.ParseFloat(strings.TrimSpace(priorityStr), 64); err == nil && priority >= 0.0 && priority <= 1.0 {
 				sitemapOptions.Priority = priority
 			} else {
 				sitemapOptions.Priority = 0.5
-				fmt.Println("   ⚠️  Invalid priority, using default 0.5")
+				fmt.Println("◇ Invalid priority, using default 0.5")
 			}
 		}
-		fmt.Printf("   ✓ Priority: %.1f\n", sitemapOptions.Priority)
 
-		// Ask whether to include lastmod
-		fmt.Println()
-		fmt.Print("   🕐 Include last modified date from server? (Y/n): ")
-		lastmodInput, _ := reader.ReadString('\n')
-		lastmodChoice := strings.ToLower(strings.TrimSpace(lastmodInput))
-		sitemapOptions.IncludeLastMod = lastmodChoice != "n" && lastmodChoice != "no"
+		sitemapOptions.IncludeLastMod = includeLastMod
+
+		fmt.Printf("◇ Output file: ./%s\n", sitemapOptions.Filename)
+		fmt.Printf("◇ Change frequency: %s\n", sitemapOptions.ChangeFreq)
+		fmt.Printf("◇ Priority: %.1f\n", sitemapOptions.Priority)
 		if sitemapOptions.IncludeLastMod {
-			fmt.Println("   ✓ Will include Last-Modified dates when available")
-		} else {
-			fmt.Println("   ✓ Will not include last modified dates")
+			fmt.Println("◇ Will include Last-Modified dates when available")
 		}
-
-		fmt.Printf("\n   📁 Output file: ./%s\n", sitemapOptions.Filename)
 	}
 
 	fmt.Println()
 
-	// Step 4: Get concurrency setting
-	fmt.Print("⚡ Max concurrent requests (default 5, max 20): ")
-	concurrencyInput, _ := reader.ReadString('\n')
+	// Step 4: Get concurrency and retry settings
+	var concurrencyStr string
+	var retriesStr string
+
+	settingsForm := huh.NewForm(
+		huh.NewGroup(
+			huh.NewInput().
+				Title("Max concurrent requests").
+				Description("Default: 5, max: 20").
+				Placeholder("5").
+				Value(&concurrencyStr),
+			huh.NewInput().
+				Title("Max retries per page").
+				Description("Default: 3").
+				Placeholder("3").
+				Value(&retriesStr),
+		),
+	)
+
+	if err := settingsForm.Run(); err != nil {
+		fmt.Println("Error:", err)
+		os.Exit(1)
+	}
+
 	concurrency := 5
-	if c, err := strconv.Atoi(strings.TrimSpace(concurrencyInput)); err == nil && c > 0 {
+	if c, err := strconv.Atoi(strings.TrimSpace(concurrencyStr)); err == nil && c > 0 {
 		if c > 20 {
 			c = 20
-			fmt.Println("   ⚠️  Capped at 20 to avoid getting banned")
+			fmt.Println("◇ Capped at 20 to avoid getting banned")
 		}
 		concurrency = c
 	}
 
-	// Step 5: Get retry settings
-	fmt.Println()
-	fmt.Print("🔄 Max retries per page (default 3): ")
-	retryInput, _ := reader.ReadString('\n')
 	maxRetries := 3
-	if r, err := strconv.Atoi(strings.TrimSpace(retryInput)); err == nil && r >= 0 {
+	if r, err := strconv.Atoi(strings.TrimSpace(retriesStr)); err == nil && r >= 0 {
 		maxRetries = r
 	}
 
@@ -361,7 +449,7 @@ func main() {
 	fmt.Println("════════════════════════════════════════════════════════════════════")
 }
 
-func suggestAndTestAlternatives(siteURL string, reader *bufio.Reader) []string {
+func suggestAndTestAlternatives(siteURL string) []string {
 	parsedURL, _ := url.Parse(siteURL)
 	baseURL := fmt.Sprintf("%s://%s", parsedURL.Scheme, parsedURL.Host)
 
@@ -396,11 +484,20 @@ func suggestAndTestAlternatives(siteURL string, reader *bufio.Reader) []string {
 	}
 
 	fmt.Println()
-	fmt.Print("   🔧 Enter a custom path to try (or press Enter to skip): ")
-	customPath, _ := reader.ReadString('\n')
-	customPath = strings.TrimSpace(customPath)
 
-	if customPath != "" {
+	var customPath string
+	customForm := huh.NewForm(
+		huh.NewGroup(
+			huh.NewInput().
+				Title("Enter a custom path to try").
+				Description("Press Enter to skip").
+				Placeholder("/custom-path").
+				Value(&customPath),
+		),
+	)
+
+	if err := customForm.Run(); err == nil && customPath != "" {
+		customPath = strings.TrimSpace(customPath)
 		if !strings.HasPrefix(customPath, "/") {
 			customPath = "/" + customPath
 		}
