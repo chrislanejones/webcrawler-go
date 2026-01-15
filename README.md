@@ -495,7 +495,25 @@ An XML file is generated (e.g., `sitemap.xml`) containing all discovered URLs wi
 | Blocked Retry Passes | 3       | Number of passes to retry blocked pages                  |
 | Image Size Threshold | 500KB   | Threshold for oversized image detection                  |
 | Path Filter          | (none)  | Only crawl URLs starting with this path (e.g., `/blog/`) |
+| Ignore Query Params  | No      | Treat URLs with different query strings as the same page |
 | Page Timeout         | 180s    | Max time to wait for a page to render (Page Capture)     |
+
+### Ignore Query Parameters
+
+Some websites use cache-busting or tracking query parameters that create duplicate URLs pointing to the same content:
+
+```
+https://example.com/page.html?cache=abc123
+https://example.com/page.html?cache=def456
+https://example.com/page.html?tracking=xyz
+```
+
+When **Ignore Query Params** is enabled, the crawler treats all of these as the same page (`https://example.com/page.html`) and only captures it once. This prevents duplicate files and speeds up crawling.
+
+**When to use:**
+- Sites with cache-busting query parameters
+- Sites with tracking/analytics parameters in URLs
+- News sites that add random query strings to links
 
 ### Sitemap-Specific Options
 

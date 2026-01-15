@@ -369,6 +369,7 @@ func main() {
 	// Step 4: Get concurrency and retry settings
 	var concurrencyStr string
 	var retriesStr string
+	var ignoreQueryParams bool
 
 	settingsForm := huh.NewForm(
 		huh.NewGroup(
@@ -382,6 +383,12 @@ func main() {
 				Description("Default: 3").
 				Placeholder("3").
 				Value(&retriesStr),
+			huh.NewConfirm().
+				Title("Ignore query parameters?").
+				Description("Treat page.html?a=1 and page.html?b=2 as the same page").
+				Affirmative("Yes").
+				Negative("No").
+				Value(&ignoreQueryParams),
 		),
 	)
 
@@ -421,6 +428,7 @@ func main() {
 		BlockedRetryPasses: 3,
 		CaptureFormat:      captureFormat,
 		PathFilter:         pathFilter,
+		IgnoreQueryParams:  ignoreQueryParams,
 		SitemapOpts:        sitemapOptions,
 	}
 
@@ -434,6 +442,9 @@ func main() {
 	fmt.Printf("│  🔄 Max retries:  %-35d │\n", maxRetries)
 	if len(altEntryPoints) > 0 {
 		fmt.Printf("│  🚪 Alt entries:  %-35d │\n", len(altEntryPoints))
+	}
+	if ignoreQueryParams {
+		fmt.Printf("│  🔗 Query params: %-35s │\n", "Ignored (dedup)")
 	}
 	fmt.Println("└─────────────────────────────────────────────────────┘")
 	fmt.Println()

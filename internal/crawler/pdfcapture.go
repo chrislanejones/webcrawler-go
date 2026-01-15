@@ -34,18 +34,19 @@ var (
 )
 
 var (
-	pdfVisited       sync.Map
-	pdfWg            sync.WaitGroup
-	pdfSema          chan struct{}
-	pdfStats         PDFCaptureStats
-	pdfStartTime     time.Time
-	pdfBaseURL       *url.URL
-	pdfOutputDir     string
-	pdfConcurrency   int
-	pdfCaptureFormat CaptureFormat
-	pdfPathFilter    string // Only crawl URLs matching this path prefix
-	pdfCurrentPage   string // Currently processing page (for status display)
-	pdfCurrentMu     sync.Mutex
+	pdfVisited           sync.Map
+	pdfWg                sync.WaitGroup
+	pdfSema              chan struct{}
+	pdfStats             PDFCaptureStats
+	pdfStartTime         time.Time
+	pdfBaseURL           *url.URL
+	pdfOutputDir         string
+	pdfConcurrency       int
+	pdfCaptureFormat     CaptureFormat
+	pdfPathFilter        string // Only crawl URLs matching this path prefix
+	pdfIgnoreQueryParams bool   // Treat URLs with different query params as the same page
+	pdfCurrentPage       string // Currently processing page (for status display)
+	pdfCurrentMu         sync.Mutex
 )
 
 // StartPDFCapture begins crawling and capturing PDFs/screenshots
@@ -56,6 +57,7 @@ func StartPDFCapture(cfg Config) {
 	pdfConcurrency = cfg.MaxConcurrency
 	pdfCaptureFormat = cfg.CaptureFormat
 	pdfPathFilter = cfg.PathFilter
+	pdfIgnoreQueryParams = cfg.IgnoreQueryParams
 	atomic.StoreInt32(&cancelRequested, 0)
 
 	// Default to both if not set
@@ -531,8 +533,8 @@ func sanitizeFilename(urlStr string) string {
 	invalidChars := regexp.MustCompile(`[<>:"/\\|?*]`)
 	name = invalidChars.ReplaceAllString(name, "_")
 
-	// Add query string hash if present
-	if u.RawQuery != "" {
+	// Add query string hash if present (unless ignoring query params)
+	if u.RawQuery != "" && !pdfIgnoreQueryParams {
 		name += "_q" + hashString(u.RawQuery)[:8]
 	}
 
@@ -567,6 +569,11 @@ func normalizeURL(link string) string {
 
 	// Remove fragment
 	u.Fragment = ""
+
+	// Strip query parameters when IgnoreQueryParams is enabled
+	if pdfIgnoreQueryParams {
+		u.RawQuery = ""
+	}
 
 	// Normalize path
 	if u.Path == "" {

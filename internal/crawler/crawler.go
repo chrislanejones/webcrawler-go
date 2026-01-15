@@ -99,6 +99,7 @@ type Config struct {
 	BlockedRetryPasses int
 	CaptureFormat      CaptureFormat
 	PathFilter         string // Only crawl URLs starting with this path (e.g., "/newsroom/")
+	IgnoreQueryParams  bool   // Treat URLs with different query params as the same page
 	SitemapOpts        SitemapOptions
 }
 
@@ -294,7 +295,7 @@ func retryBlockedPages() {
 		atomic.AddInt64(&stats.BlockedRetried, 1)
 
 		blockedQueue.Delete(pageURL)
-		visited.Delete(pageURL)
+		visited.Delete(getVisitedKey(pageURL))
 
 		wg.Add(1)
 		go func(link string, attemptNum int) {
@@ -541,7 +542,8 @@ func writeOversizedImage(imageURL, foundOnPage string, sizeKB int64, contentType
 }
 
 func crawl(link string) {
-	if _, loaded := visited.LoadOrStore(link, true); loaded {
+	visitedKey := getVisitedKey(link)
+	if _, loaded := visited.LoadOrStore(visitedKey, true); loaded {
 		return
 	}
 
@@ -779,7 +781,7 @@ func fetchPageForRetry(link string, retryAttempt int) bool {
 		extractInternalLinks(bodyBytes, link)
 	}
 
-	visited.Store(link, true)
+	visited.Store(getVisitedKey(link), true)
 	return true
 }
 
@@ -1006,4 +1008,24 @@ func handleNetworkError(err error) {
 	case strings.Contains(errStr, "certificate"):
 		atomic.AddInt64(&stats.SSLErrors, 1)
 	}
+}
+
+// getVisitedKey returns the key to use for visited URL tracking.
+// When IgnoreQueryParams is enabled, it strips query parameters so that
+// URLs like page.html?a=1 and page.html?b=2 are treated as the same page.
+func getVisitedKey(link string) string {
+	if !config.IgnoreQueryParams {
+		return link
+	}
+
+	u, err := url.Parse(link)
+	if err != nil {
+		return link
+	}
+
+	// Strip query parameters and fragment
+	u.RawQuery = ""
+	u.Fragment = ""
+
+	return u.String()
 }
