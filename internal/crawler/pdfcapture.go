@@ -34,18 +34,19 @@ var (
 )
 
 var (
-	pdfVisited       sync.Map
-	pdfWg            sync.WaitGroup
-	pdfSema          chan struct{}
-	pdfStats         PDFCaptureStats
-	pdfStartTime     time.Time
-	pdfBaseURL       *url.URL
-	pdfOutputDir     string
-	pdfConcurrency   int
-	pdfCaptureFormat CaptureFormat
-	pdfPathFilter    string // Only crawl URLs matching this path prefix
-	pdfCurrentPage   string // Currently processing page (for status display)
-	pdfCurrentMu     sync.Mutex
+	pdfVisited          sync.Map
+	pdfWg               sync.WaitGroup
+	pdfSema             chan struct{}
+	pdfStats            PDFCaptureStats
+	pdfStartTime        time.Time
+	pdfBaseURL          *url.URL
+	pdfOutputDir        string
+	pdfConcurrency      int
+	pdfCaptureFormat    CaptureFormat
+	pdfPathFilter       string // Only crawl URLs matching this path prefix
+	pdfIgnoreQueryParams bool   // Treat URLs with different query params as the same page
+	pdfCurrentPage      string // Currently processing page (for status display)
+	pdfCurrentMu        sync.Mutex
 )
 
 // StartPDFCapture begins crawling and capturing PDFs/screenshots
@@ -56,6 +57,7 @@ func StartPDFCapture(cfg Config) {
 	pdfConcurrency = cfg.MaxConcurrency
 	pdfCaptureFormat = cfg.CaptureFormat
 	pdfPathFilter = cfg.PathFilter
+	pdfIgnoreQueryParams = cfg.IgnoreQueryParams
 	atomic.StoreInt32(&cancelRequested, 0)
 
 	// Default to both if not set
@@ -107,6 +109,348 @@ func StartPDFCapture(cfg Config) {
 	stopStats <- true
 	stopKeyListener <- true
 	printPDFFinalStats()
+}
+
+// StartNewsroomCapture captures PDFs/screenshots for a specific list of URLs (no crawling)
+func StartNewsroomCapture(cfg Config, urls []string) {
+	pdfVisited = sync.Map{}
+	pdfStats = PDFCaptureStats{}
+	pdfStartTime = time.Now()
+	pdfConcurrency = cfg.MaxConcurrency
+	pdfCaptureFormat = cfg.CaptureFormat
+	pdfPathFilter = ""
+	pdfIgnoreQueryParams = cfg.IgnoreQueryParams
+	atomic.StoreInt32(&cancelRequested, 0)
+
+	// Default to PDF only if not set
+	if pdfCaptureFormat == 0 {
+		pdfCaptureFormat = CapturePDFOnly
+	}
+
+	var err error
+	pdfBaseURL, err = url.Parse(cfg.StartURL)
+	if err != nil {
+		fmt.Printf("❌ Invalid start URL: %v\n", err)
+		return
+	}
+
+	// Create output directory with timestamp
+	timestamp := time.Now().Format("2006-01-02_15-04-05")
+	pdfOutputDir = fmt.Sprintf("newsroom_captures_%s", timestamp)
+	os.MkdirAll(pdfOutputDir, 0755)
+
+	pdfSema = make(chan struct{}, cfg.MaxConcurrency)
+
+	// Set total pages queued
+	atomic.StoreInt64(&pdfStats.PagesQueued, int64(len(urls)))
+
+	// Start live stats
+	stopStats := make(chan bool)
+	go printPDFLiveStats(stopStats)
+
+	// Start keyboard listener for cancellation
+	stopKeyListener := make(chan bool)
+	go listenForCancel(stopKeyListener)
+
+	// Determine format label
+	formatLabel := pdfCaptureFormat.String()
+
+	fmt.Println("┌─────────────────── NEWSROOM CAPTURE STARTING ──────────────────┐")
+	fmt.Printf("│  📰 Pages:  %-43d │\n", len(urls))
+	fmt.Printf("│  📁 Output: %-43s │\n", pdfOutputDir)
+	fmt.Printf("│  📋 Format: %-43s │\n", formatLabel)
+	fmt.Println("├────────────────────────────────────────────────────────────────┤")
+	fmt.Println("│  💡 Press 'c' + Enter to cancel and save current progress      │")
+	fmt.Println("└────────────────────────────────────────────────────────────────┘")
+	fmt.Println()
+
+	// Process each URL (no crawling, just capture)
+	for _, pageURL := range urls {
+		if atomic.LoadInt32(&cancelRequested) == 1 {
+			break
+		}
+
+		// Mark as visited to avoid duplicates
+		if _, exists := pdfVisited.LoadOrStore(pageURL, true); exists {
+			continue
+		}
+
+		pdfWg.Add(1)
+		go func(u string) {
+			defer pdfWg.Done()
+			pdfSema <- struct{}{}
+			defer func() { <-pdfSema }()
+
+			if atomic.LoadInt32(&cancelRequested) == 1 {
+				return
+			}
+
+			atomic.AddInt64(&pdfStats.PagesVisited, 1)
+			capturePageOnly(u) // Capture without extracting links
+		}(pageURL)
+	}
+
+	pdfWg.Wait()
+
+	stopStats <- true
+	stopKeyListener <- true
+	printPDFFinalStats()
+}
+
+// capturePageOnly captures a single page without extracting/following links
+func capturePageOnly(pageURL string) {
+	// Track current page for status display
+	pdfCurrentMu.Lock()
+	pdfCurrentPage = pageURL
+	pdfCurrentMu.Unlock()
+
+	// Create Chrome context
+	opts := append(chromedp.DefaultExecAllocatorOptions[:],
+		chromedp.Flag("headless", true),
+		chromedp.Flag("disable-gpu", true),
+		chromedp.Flag("no-sandbox", true),
+		chromedp.Flag("disable-setuid-sandbox", true),
+		chromedp.Flag("disable-dev-shm-usage", true),
+		chromedp.Flag("disable-web-security", true),
+		chromedp.Flag("ignore-certificate-errors", true),
+		chromedp.WindowSize(1920, 1080),
+	)
+
+	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), opts...)
+	defer allocCancel()
+
+	ctx, cancel := chromedp.NewContext(allocCtx)
+	defer cancel()
+
+	ctx, cancel = context.WithTimeout(ctx, 180*time.Second)
+	defer cancel()
+
+	var pdfBuf []byte
+	var pngBuf []byte
+	var releaseDate string
+	var pageTitle string
+
+	// Build actions based on capture format
+	actions := []chromedp.Action{
+		chromedp.Navigate(pageURL),
+		chromedp.WaitReady("body", chromedp.ByQuery),
+		chromedp.Sleep(2 * time.Second),
+		chromedp.Evaluate(`window.scrollTo(0, document.body.scrollHeight)`, nil),
+		chromedp.Sleep(1 * time.Second),
+		chromedp.Evaluate(`window.scrollTo(0, 0)`, nil),
+		chromedp.Sleep(500 * time.Millisecond),
+		// Wait for content to stabilize
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			var lastLength int
+			stableCount := 0
+
+			for attempt := 0; attempt < 30; attempt++ {
+				var currentLength int
+				err := chromedp.Evaluate(`document.body.innerText.length`, &currentLength).Do(ctx)
+				if err != nil {
+					time.Sleep(500 * time.Millisecond)
+					continue
+				}
+
+				if currentLength > 500 && currentLength == lastLength {
+					stableCount++
+					if stableCount >= 3 {
+						return nil
+					}
+				} else {
+					stableCount = 0
+				}
+
+				lastLength = currentLength
+				time.Sleep(500 * time.Millisecond)
+			}
+
+			time.Sleep(2 * time.Second)
+			return nil
+		}),
+		chromedp.Sleep(1 * time.Second),
+		// Extract release date (look for "For Immediate Release: DATE")
+		chromedp.Evaluate(`
+			(function() {
+				var text = document.body.innerText;
+				var match = text.match(/For Immediate Release:\s*([A-Za-z]+\s+\d{1,2},?\s+\d{4})/i);
+				if (match) return match[1].trim();
+				// Try alternate patterns
+				match = text.match(/Release Date:\s*([A-Za-z]+\s+\d{1,2},?\s+\d{4})/i);
+				if (match) return match[1].trim();
+				return "";
+			})()
+		`, &releaseDate),
+		// Extract page title (main headline - usually h1 or the largest heading)
+		chromedp.Evaluate(`
+			(function() {
+				// Try h1 first
+				var h1 = document.querySelector('h1');
+				if (h1 && h1.innerText.trim()) return h1.innerText.trim();
+				// Try article title
+				var article = document.querySelector('article h1, article h2, .article-title, .news-title');
+				if (article && article.innerText.trim()) return article.innerText.trim();
+				// Fallback to document title
+				return document.title || "";
+			})()
+		`, &pageTitle),
+	}
+
+	// Add screenshot capture if needed
+	if pdfCaptureFormat == CaptureImagesOnly || pdfCaptureFormat == CaptureBoth {
+		actions = append(actions, chromedp.ActionFunc(func(ctx context.Context) error {
+			_, _, contentSize, _, _, _, err := page.GetLayoutMetrics().Do(ctx)
+			if err != nil {
+				return err
+			}
+
+			width, height := int64(contentSize.Width), int64(contentSize.Height)
+			if height > 16384 {
+				height = 16384
+			}
+
+			err = emulation.SetDeviceMetricsOverride(width, height, 1, false).
+				WithScreenOrientation(&emulation.ScreenOrientation{
+					Type:  emulation.OrientationTypePortraitPrimary,
+					Angle: 0,
+				}).Do(ctx)
+			if err != nil {
+				return err
+			}
+
+			pngBuf, err = page.CaptureScreenshot().
+				WithQuality(100).
+				WithFromSurface(true).
+				Do(ctx)
+			return err
+		}))
+	}
+
+	// Add PDF generation if needed
+	if pdfCaptureFormat == CapturePDFOnly || pdfCaptureFormat == CaptureBoth {
+		actions = append(actions, chromedp.ActionFunc(func(ctx context.Context) error {
+			var err error
+			pdfBuf, _, err = page.PrintToPDF().
+				WithPrintBackground(true).
+				WithScale(1.0).
+				WithPaperWidth(8.5).
+				WithPaperHeight(11).
+				WithMarginTop(0.4).
+				WithMarginBottom(0.4).
+				WithMarginLeft(0.4).
+				WithMarginRight(0.4).
+				WithDisplayHeaderFooter(false).
+				WithGenerateDocumentOutline(false).
+				Do(ctx)
+			return err
+		}))
+	}
+
+	err := chromedp.Run(ctx, actions...)
+	if err != nil {
+		atomic.AddInt64(&pdfStats.Errors, 1)
+		fmt.Print("\033[2K\r")
+		fmt.Printf("❌ Error: %s - %v\n\n", truncateString(pageURL, 40), err)
+		return
+	}
+
+	// Build filename from date and title
+	filename := buildNewsroomFilename(releaseDate, pageTitle, pageURL)
+
+	pdfPath := filepath.Join(pdfOutputDir, filename+".pdf")
+	pngPath := filepath.Join(pdfOutputDir, filename+".png")
+
+	// Check if already captured
+	if _, err := os.Stat(pdfPath); err == nil {
+		return
+	}
+
+	// Save PDF if generated
+	if pdfCaptureFormat == CapturePDFOnly || pdfCaptureFormat == CaptureBoth {
+		if err := os.WriteFile(pdfPath, pdfBuf, 0644); err != nil {
+			atomic.AddInt64(&pdfStats.Errors, 1)
+			return
+		}
+		atomic.AddInt64(&pdfStats.PDFsGenerated, 1)
+	}
+
+	// Save screenshot if generated
+	if pdfCaptureFormat == CaptureImagesOnly || pdfCaptureFormat == CaptureBoth {
+		if err := os.WriteFile(pngPath, pngBuf, 0644); err != nil {
+			atomic.AddInt64(&pdfStats.Errors, 1)
+			return
+		}
+		atomic.AddInt64(&pdfStats.ScreenshotsGen, 1)
+	}
+}
+
+// buildNewsroomFilename creates a filename like "01-15-2026 - Title Here"
+func buildNewsroomFilename(releaseDate, pageTitle, fallbackURL string) string {
+	// Parse and format date
+	formattedDate := formatReleaseDate(releaseDate)
+
+	// Clean up title
+	title := strings.TrimSpace(pageTitle)
+	if title == "" {
+		// Fallback to URL-based name
+		return sanitizeFilename(fallbackURL)
+	}
+
+	// Remove or replace invalid filename characters
+	invalidChars := regexp.MustCompile(`[<>:"/\\|?*]`)
+	title = invalidChars.ReplaceAllString(title, "")
+
+	// Replace newlines and multiple spaces
+	title = regexp.MustCompile(`[\r\n]+`).ReplaceAllString(title, " ")
+	title = regexp.MustCompile(`\s+`).ReplaceAllString(title, " ")
+	title = strings.TrimSpace(title)
+
+	// Limit title length
+	if len(title) > 150 {
+		title = title[:150]
+	}
+
+	// Build final filename
+	if formattedDate != "" {
+		return formattedDate + " - " + title
+	}
+	return title
+}
+
+// formatReleaseDate converts "January 15, 2026" to "01-15-2026"
+func formatReleaseDate(dateStr string) string {
+	if dateStr == "" {
+		return ""
+	}
+
+	// Month name to number mapping
+	months := map[string]string{
+		"january": "01", "february": "02", "march": "03", "april": "04",
+		"may": "05", "june": "06", "july": "07", "august": "08",
+		"september": "09", "october": "10", "november": "11", "december": "12",
+	}
+
+	// Parse "Month DD, YYYY" or "Month DD YYYY"
+	dateStr = strings.ReplaceAll(dateStr, ",", "")
+	parts := strings.Fields(strings.ToLower(dateStr))
+
+	if len(parts) < 3 {
+		return ""
+	}
+
+	monthNum, ok := months[parts[0]]
+	if !ok {
+		return ""
+	}
+
+	day := parts[1]
+	if len(day) == 1 {
+		day = "0" + day
+	}
+
+	year := parts[2]
+
+	return monthNum + "-" + day + "-" + year
 }
 
 // listenForCancel listens for 'c' key press to cancel crawling
@@ -531,8 +875,8 @@ func sanitizeFilename(urlStr string) string {
 	invalidChars := regexp.MustCompile(`[<>:"/\\|?*]`)
 	name = invalidChars.ReplaceAllString(name, "_")
 
-	// Add query string hash if present
-	if u.RawQuery != "" {
+	// Add query string hash if present (unless ignoring query params)
+	if u.RawQuery != "" && !pdfIgnoreQueryParams {
 		name += "_q" + hashString(u.RawQuery)[:8]
 	}
 
@@ -567,6 +911,11 @@ func normalizeURL(link string) string {
 
 	// Remove fragment
 	u.Fragment = ""
+
+	// Strip query parameters when IgnoreQueryParams is enabled
+	if pdfIgnoreQueryParams {
+		u.RawQuery = ""
+	}
 
 	// Normalize path
 	if u.Path == "" {

@@ -2,7 +2,9 @@ package main
 
 import (
 	"crypto/tls"
+	"encoding/xml"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -21,6 +23,29 @@ func main() {
 	fmt.Println("║                              v2.5                                 ║")
 	fmt.Println("╚═══════════════════════════════════════════════════════════════════╝")
 	fmt.Println()
+
+	// Special mode: Governor VA Newsroom Pull
+	var useNewsroomPull bool
+	newsroomForm := huh.NewForm(
+		huh.NewGroup(
+			huh.NewConfirm().
+				Title("Governor VA Newsroom Pull?").
+				Description("Pull all news releases from governor.virginia.gov via sitemap").
+				Affirmative("Yes").
+				Negative("No, regular crawl").
+				Value(&useNewsroomPull),
+		),
+	)
+
+	if err := newsroomForm.Run(); err != nil {
+		fmt.Println("Error:", err)
+		os.Exit(1)
+	}
+
+	if useNewsroomPull {
+		runNewsroomPull()
+		return
+	}
 
 	// Step 1: Get the site URL
 	var siteURL string
@@ -369,6 +394,7 @@ func main() {
 	// Step 4: Get concurrency and retry settings
 	var concurrencyStr string
 	var retriesStr string
+	var ignoreQueryParams bool
 
 	settingsForm := huh.NewForm(
 		huh.NewGroup(
@@ -382,6 +408,12 @@ func main() {
 				Description("Default: 3").
 				Placeholder("3").
 				Value(&retriesStr),
+			huh.NewConfirm().
+				Title("Ignore query parameters?").
+				Description("Treat page.html?a=1 and page.html?b=2 as the same page").
+				Affirmative("Yes").
+				Negative("No").
+				Value(&ignoreQueryParams),
 		),
 	)
 
@@ -421,6 +453,7 @@ func main() {
 		BlockedRetryPasses: 3,
 		CaptureFormat:      captureFormat,
 		PathFilter:         pathFilter,
+		IgnoreQueryParams:  ignoreQueryParams,
 		SitemapOpts:        sitemapOptions,
 	}
 
@@ -434,6 +467,9 @@ func main() {
 	fmt.Printf("│  🔄 Max retries:  %-35d │\n", maxRetries)
 	if len(altEntryPoints) > 0 {
 		fmt.Printf("│  🚪 Alt entries:  %-35d │\n", len(altEntryPoints))
+	}
+	if ignoreQueryParams {
+		fmt.Printf("│  🔗 Query params: %-35s │\n", "Ignored (dedup)")
 	}
 	fmt.Println("└─────────────────────────────────────────────────────┘")
 	fmt.Println()
@@ -692,4 +728,304 @@ func truncateString(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen-3] + "..."
+}
+
+// Sitemap XML structures
+type SitemapIndex struct {
+	XMLName  xml.Name  `xml:"sitemapindex"`
+	Sitemaps []Sitemap `xml:"sitemap"`
+}
+
+type Sitemap struct {
+	Loc string `xml:"loc"`
+}
+
+type URLSet struct {
+	XMLName xml.Name     `xml:"urlset"`
+	URLs    []SitemapURL `xml:"url"`
+}
+
+type SitemapURL struct {
+	Loc string `xml:"loc"`
+}
+
+func runNewsroomPull() {
+	fmt.Println()
+	fmt.Println("╔═══════════════════════════════════════════════════════════════════╗")
+	fmt.Println("║              📰 Governor VA Newsroom Pull 📰                      ║")
+	fmt.Println("╚═══════════════════════════════════════════════════════════════════╝")
+	fmt.Println()
+
+	// Step 1: Ask for year filter
+	var yearFilter string
+	yearForm := huh.NewForm(
+		huh.NewGroup(
+			huh.NewInput().
+				Title("Filter by year (optional)").
+				Description("Leave blank for all years, or enter e.g. '2025'").
+				Placeholder("2025").
+				Value(&yearFilter),
+		),
+	)
+
+	if err := yearForm.Run(); err != nil {
+		fmt.Println("Error:", err)
+		os.Exit(1)
+	}
+	yearFilter = strings.TrimSpace(yearFilter)
+
+	// Step 2: Ask for month filter (only if year specified)
+	var monthFilter string
+	if yearFilter != "" {
+		monthForm := huh.NewForm(
+			huh.NewGroup(
+				huh.NewInput().
+					Title("Filter by month (optional)").
+					Description("Leave blank for all months, or enter e.g. 'december'").
+					Placeholder("december").
+					Value(&monthFilter),
+			),
+		)
+
+		if err := monthForm.Run(); err != nil {
+			fmt.Println("Error:", err)
+			os.Exit(1)
+		}
+		monthFilter = strings.TrimSpace(strings.ToLower(monthFilter))
+	}
+
+	// Step 3: Ask for capture format
+	var formatChoice string
+	formatForm := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("What format do you want to capture?").
+				Options(
+					huh.NewOption("📑 PDF only", "pdf"),
+					huh.NewOption("🖼️  Images only (PNG)", "images"),
+					huh.NewOption("📑🖼️  Both PDF + Images", "both"),
+				).
+				Value(&formatChoice),
+		),
+	)
+
+	if err := formatForm.Run(); err != nil {
+		fmt.Println("Error:", err)
+		os.Exit(1)
+	}
+
+	var captureFormat crawler.CaptureFormat
+	switch formatChoice {
+	case "pdf":
+		captureFormat = crawler.CapturePDFOnly
+	case "images":
+		captureFormat = crawler.CaptureImagesOnly
+	case "both":
+		captureFormat = crawler.CaptureBoth
+	}
+
+	// Step 4: Fetch and parse sitemap
+	fmt.Println()
+	fmt.Println("🗺️  Fetching sitemap from governor.virginia.gov...")
+
+	urls, err := fetchNewsroomURLs(yearFilter, monthFilter)
+	if err != nil {
+		fmt.Printf("❌ Error fetching sitemap: %v\n", err)
+		os.Exit(1)
+	}
+
+	if len(urls) == 0 {
+		fmt.Println("❌ No news release URLs found matching your filters.")
+		os.Exit(1)
+	}
+
+	// Build filter description
+	filterDesc := "all news releases"
+	if yearFilter != "" {
+		filterDesc = yearFilter
+		if monthFilter != "" {
+			filterDesc += "/" + monthFilter
+		}
+	}
+
+	fmt.Printf("✅ Found %d news release URLs (%s)\n", len(urls), filterDesc)
+	fmt.Println()
+
+	// Step 5: Confirm and start
+	var confirm bool
+	confirmForm := huh.NewForm(
+		huh.NewGroup(
+			huh.NewConfirm().
+				Title(fmt.Sprintf("Start capturing %d pages?", len(urls))).
+				Affirmative("Yes, start").
+				Negative("Cancel").
+				Value(&confirm),
+		),
+	)
+
+	if err := confirmForm.Run(); err != nil {
+		fmt.Println("Error:", err)
+		os.Exit(1)
+	}
+
+	if !confirm {
+		fmt.Println("Cancelled.")
+		return
+	}
+
+	fmt.Println()
+	fmt.Println("════════════════════════════════════════════════════════════════════")
+	fmt.Println()
+
+	// Step 6: Start capture
+	config := crawler.Config{
+		StartURL:          "https://www.governor.virginia.gov/newsroom/news-releases/",
+		MaxConcurrency:    5,
+		MaxRetries:        3,
+		RetryDelay:        2 * time.Second,
+		CaptureFormat:     captureFormat,
+		IgnoreQueryParams: true,
+	}
+
+	crawler.StartNewsroomCapture(config, urls)
+
+	fmt.Println()
+	fmt.Println("════════════════════════════════════════════════════════════════════")
+	fmt.Println("🎉 Newsroom pull complete!")
+	fmt.Println("════════════════════════════════════════════════════════════════════")
+}
+
+func fetchNewsroomURLs(yearFilter, monthFilter string) ([]string, error) {
+	baseURL := "https://www.governor.virginia.gov"
+	sitemapURL := baseURL + "/sitemap.xml"
+
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
+
+	// Fetch main sitemap index
+	resp, err := client.Get(sitemapURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch sitemap: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read sitemap: %w", err)
+	}
+
+	var allURLs []string
+
+	// Try parsing as sitemap index first
+	var sitemapIndex SitemapIndex
+	if err := xml.Unmarshal(body, &sitemapIndex); err == nil && len(sitemapIndex.Sitemaps) > 0 {
+		fmt.Printf("   📂 Found sitemap index with %d sub-sitemaps\n", len(sitemapIndex.Sitemaps))
+
+		for _, sitemap := range sitemapIndex.Sitemaps {
+			// Only fetch sitemaps that might contain newsroom URLs
+			if !strings.Contains(sitemap.Loc, "newsroom") && !strings.Contains(sitemap.Loc, "news") {
+				continue
+			}
+
+			fmt.Printf("   📄 Fetching %s...\n", truncateString(sitemap.Loc, 50))
+
+			subResp, err := client.Get(sitemap.Loc)
+			if err != nil {
+				continue
+			}
+
+			subBody, err := io.ReadAll(subResp.Body)
+			subResp.Body.Close()
+			if err != nil {
+				continue
+			}
+
+			var urlSet URLSet
+			if err := xml.Unmarshal(subBody, &urlSet); err == nil {
+				for _, u := range urlSet.URLs {
+					if isNewsReleaseURL(u.Loc, yearFilter, monthFilter) {
+						allURLs = append(allURLs, u.Loc)
+					}
+				}
+			}
+		}
+	} else {
+		// Try parsing as direct URL set
+		var urlSet URLSet
+		if err := xml.Unmarshal(body, &urlSet); err == nil {
+			for _, u := range urlSet.URLs {
+				if isNewsReleaseURL(u.Loc, yearFilter, monthFilter) {
+					allURLs = append(allURLs, u.Loc)
+				}
+			}
+		}
+	}
+
+	// If sitemap didn't work, try fetching the known newsroom sitemap directly
+	if len(allURLs) == 0 {
+		fmt.Println("   🔄 Trying direct newsroom sitemap...")
+
+		// Try common sitemap patterns
+		newsroomSitemaps := []string{
+			baseURL + "/newsroom-sitemap.xml",
+			baseURL + "/sitemap-newsroom.xml",
+			baseURL + "/newsroom/sitemap.xml",
+		}
+
+		for _, smURL := range newsroomSitemaps {
+			resp, err := client.Get(smURL)
+			if err != nil || resp.StatusCode != 200 {
+				if resp != nil {
+					resp.Body.Close()
+				}
+				continue
+			}
+
+			body, err := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if err != nil {
+				continue
+			}
+
+			var urlSet URLSet
+			if err := xml.Unmarshal(body, &urlSet); err == nil {
+				for _, u := range urlSet.URLs {
+					if isNewsReleaseURL(u.Loc, yearFilter, monthFilter) {
+						allURLs = append(allURLs, u.Loc)
+					}
+				}
+				if len(allURLs) > 0 {
+					break
+				}
+			}
+		}
+	}
+
+	return allURLs, nil
+}
+
+func isNewsReleaseURL(urlStr, yearFilter, monthFilter string) bool {
+	// Must be a news release page (contains /name-)
+	if !strings.Contains(urlStr, "/newsroom/news-releases/") {
+		return false
+	}
+	if !strings.Contains(urlStr, "/name-") {
+		return false
+	}
+
+	// Apply year filter
+	if yearFilter != "" && !strings.Contains(urlStr, "/"+yearFilter+"/") {
+		return false
+	}
+
+	// Apply month filter
+	if monthFilter != "" && !strings.Contains(urlStr, "/"+monthFilter+"/") {
+		return false
+	}
+
+	return true
 }
