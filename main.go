@@ -149,6 +149,7 @@ func main() {
 					huh.NewOption("🖼️  Search for oversized images", 4),
 					huh.NewOption("📄 Generate PDF/Image for every page", 5),
 					huh.NewOption("🗺️  Generate XML sitemap", 6),
+					huh.NewOption("📡 Capture pages from JSON feed", 7),
 				).
 				Value(&modeChoice),
 		),
@@ -168,6 +169,7 @@ func main() {
 	var imageSizeThreshold int64 = 500
 	var captureFormat crawler.CaptureFormat = crawler.CaptureBoth
 	var sitemapOptions crawler.SitemapOptions
+	var jsonFeedOptions crawler.JSONFeedOptions
 
 	switch mode {
 	case crawler.ModeSearchLink:
@@ -362,6 +364,78 @@ func main() {
 		if sitemapOptions.IncludeLastMod {
 			fmt.Println("◇ Will include Last-Modified dates when available")
 		}
+
+	case crawler.ModeJSONFeed:
+		var feedURL string
+		var tagFilter string
+		var formatChoice string
+
+		form := huh.NewForm(
+			huh.NewGroup(
+				huh.NewInput().
+					Title("Enter the JSON feed URL").
+					Description("Direct URL to the JSON endpoint (e.g., /newsroom/feed.json)").
+					Placeholder("https://example.com/api/news.json").
+					Value(&feedURL).
+					Validate(func(s string) error {
+						if strings.TrimSpace(s) == "" {
+							return fmt.Errorf("feed URL cannot be empty")
+						}
+						return nil
+					}),
+			),
+			huh.NewGroup(
+				huh.NewInput().
+					Title("Filter by tag (optional)").
+					Description("Only capture items containing this tag").
+					Placeholder("Governor74").
+					Value(&tagFilter),
+			),
+			huh.NewGroup(
+				huh.NewSelect[string]().
+					Title("What format do you want to capture?").
+					Options(
+						huh.NewOption("📑 PDF only", "pdf"),
+						huh.NewOption("🖼️  Images only (PNG)", "images"),
+						huh.NewOption("📑🖼️  Both PDF + Images", "both"),
+						huh.NewOption("🎨 CMYK PDF (for print) - requires Ghostscript", "cmyk-pdf"),
+						huh.NewOption("🎨 CMYK TIFF (for InDesign) - requires ImageMagick", "cmyk-tiff"),
+					).
+					Value(&formatChoice),
+			),
+		)
+
+		if err := form.Run(); err != nil {
+			fmt.Println("Error:", err)
+			os.Exit(1)
+		}
+
+		jsonFeedOptions.FeedURL = strings.TrimSpace(feedURL)
+		jsonFeedOptions.TagFilter = strings.TrimSpace(tagFilter)
+
+		switch formatChoice {
+		case "pdf":
+			captureFormat = crawler.CapturePDFOnly
+			fmt.Println("◇ Will generate PDFs only")
+		case "images":
+			captureFormat = crawler.CaptureImagesOnly
+			fmt.Println("◇ Will generate PNG screenshots only")
+		case "both":
+			captureFormat = crawler.CaptureBoth
+			fmt.Println("◇ Will generate both PDFs and PNG screenshots")
+		case "cmyk-pdf":
+			captureFormat = crawler.CaptureCMYKPDF
+			fmt.Println("◇ Will generate CMYK PDFs (requires Ghostscript)")
+		case "cmyk-tiff":
+			captureFormat = crawler.CaptureCMYKTIFF
+			fmt.Println("◇ Will generate CMYK TIFFs (requires ImageMagick)")
+		}
+
+		fmt.Printf("◇ Feed URL: %s\n", jsonFeedOptions.FeedURL)
+		if jsonFeedOptions.TagFilter != "" {
+			fmt.Printf("◇ Tag filter: %s\n", jsonFeedOptions.TagFilter)
+		}
+		fmt.Println("◇ Output folder: ./json_feed_captures_*/")
 	}
 
 	fmt.Println()
@@ -430,6 +504,7 @@ func main() {
 		PathFilter:         pathFilter,
 		IgnoreQueryParams:  ignoreQueryParams,
 		SitemapOpts:        sitemapOptions,
+		JSONFeedOpts:       jsonFeedOptions,
 	}
 
 	fmt.Println("┌─────────────────── LAUNCH CONFIG ───────────────────┐")

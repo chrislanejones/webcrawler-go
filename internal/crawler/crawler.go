@@ -31,6 +31,7 @@ const (
 	ModeOversizedImages
 	ModePDFCapture
 	ModeSitemap
+	ModeJSONFeed
 )
 
 func (m SearchMode) String() string {
@@ -47,6 +48,8 @@ func (m SearchMode) String() string {
 		return "Page Capture"
 	case ModeSitemap:
 		return "XML Sitemap Generator"
+	case ModeJSONFeed:
+		return "JSON Feed Capture"
 	default:
 		return "Unknown"
 	}
@@ -86,6 +89,16 @@ type SitemapOptions struct {
 	IncludeLastMod bool
 }
 
+type JSONFeedOptions struct {
+	FeedURL       string   // URL of the JSON feed
+	TagFilter     string   // Optional tag to filter items by
+	LinkField     string   // JSON field containing the article link (default: "link")
+	HeadlineField string   // JSON field containing the headline (default: "headline")
+	DateField     string   // JSON field containing the date (default: "date")
+	BriefField    string   // JSON field containing the brief/summary (default: "brief")
+	TagsField     string   // JSON field containing tags (default: "tags")
+}
+
 type Config struct {
 	StartURL           string
 	AltEntryPoints     []string
@@ -101,6 +114,7 @@ type Config struct {
 	PathFilter         string // Only crawl URLs starting with this path (e.g., "/newsroom/")
 	IgnoreQueryParams  bool   // Treat URLs with different query params as the same page
 	SitemapOpts        SitemapOptions
+	JSONFeedOpts       JSONFeedOptions
 }
 
 type Stats struct {
@@ -218,6 +232,10 @@ func Start(cfg Config) {
 	case ModeSitemap:
 		// Sitemap uses its own output handling
 		StartSitemapGeneration(cfg)
+		return
+	case ModeJSONFeed:
+		// JSON feed uses its own output handling
+		StartJSONFeedCapture(cfg)
 		return
 	}
 
