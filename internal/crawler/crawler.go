@@ -859,7 +859,11 @@ func checkLink(href, pageURL string) {
 		return
 	}
 
-	resolved := baseURL.ResolveReference(u).String()
+	pageBase, err := url.Parse(pageURL)
+	if err != nil {
+		return
+	}
+	resolved := pageBase.ResolveReference(u).String()
 	atomic.AddInt64(&stats.LinksChecked, 1)
 
 	req, err := http.NewRequest("HEAD", resolved, nil)
@@ -911,7 +915,11 @@ func checkImage(src, pageURL string) {
 		return
 	}
 
-	resolved := baseURL.ResolveReference(u).String()
+	pageBase, err := url.Parse(pageURL)
+	if err != nil {
+		return
+	}
+	resolved := pageBase.ResolveReference(u).String()
 	atomic.AddInt64(&stats.ImagesChecked, 1)
 
 	req, err := http.NewRequest("GET", resolved, nil)
@@ -946,8 +954,13 @@ func checkImage(src, pageURL string) {
 	}
 }
 
-func extractInternalLinks(body []byte, _ string) {
+func extractInternalLinks(body []byte, pageURL string) {
 	doc, err := html.Parse(bytes.NewReader(body))
+	if err != nil {
+		return
+	}
+
+	pageBase, err := url.Parse(pageURL)
 	if err != nil {
 		return
 	}
@@ -962,7 +975,7 @@ func extractInternalLinks(body []byte, _ string) {
 						continue
 					}
 
-					next := baseURL.ResolveReference(u).String()
+					next := pageBase.ResolveReference(u).String()
 					nextURL, err := url.Parse(next)
 					if err != nil {
 						continue
