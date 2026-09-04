@@ -721,6 +721,26 @@ If the sitemap has no URLs:
 
 ---
 
+## 🧪 Development
+
+```bash
+# Run the tests
+go test ./...
+
+# Same as CI runs them
+go test -race ./...
+
+# The full gate set before committing
+gofmt -l . && go vet ./... && go build ./... && go test ./...
+```
+
+Tests cover the broken-link classification against a local server that
+imitates the awkward cases: a CDN that rejects `HEAD`, one that answers
+`HEAD` with 404 but `GET` with 200, firewall 403s, rate limits and real
+404s. CI runs gofmt, vet, build, tests and `govulncheck` on every push.
+
+---
+
 ## 🛠️ Building
 
 ```bash

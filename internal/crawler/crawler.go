@@ -2,6 +2,7 @@ package crawler
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"encoding/csv"
 	"fmt"
@@ -903,15 +904,13 @@ func checkLink(href, pageURL string) {
 	// Try HEAD first because it is cheap, then fall back to GET. Plenty of
 	// CDNs answer HEAD with 405, or with a 404 they would not give a GET,
 	// so a HEAD-only checker invents broken links.
+	//
+	// A transport error is not retried. DNS failures, refused connections
+	// and timeouts fail the same way for GET, and retrying doubles the wait
+	// on exactly the links that are slowest to fail.
 	status, err := requestLink("HEAD", resolved)
-	if err != nil || status == http.StatusMethodNotAllowed || status >= 400 {
-		var getErr error
-		status, getErr = requestLink("GET", resolved)
-		if getErr != nil {
-			err = getErr
-		} else {
-			err = nil
-		}
+	if err == nil && (status == http.StatusMethodNotAllowed || status >= 400) {
+		status, err = requestLink("GET", resolved)
 	}
 
 	if err != nil {
@@ -935,6 +934,11 @@ func checkLink(href, pageURL string) {
 	}
 }
 
+// linkCheckTimeout bounds a single link check. Checking a link is cheaper
+// than fetching a page to crawl, so it does not need the client's full
+// timeout, and a site full of dead external links should not stall a run.
+var linkCheckTimeout = 15 * time.Second
+
 // isBlockedStatus reports whether a status means "I will not serve this
 // client" rather than "this page does not exist".
 func isBlockedStatus(status int) bool {
@@ -949,7 +953,10 @@ func isBlockedStatus(status int) bool {
 // cookies the crawler established are reused and the request looks like the
 // browser the user agent claims.
 func requestLink(method, link string) (int, error) {
-	req, err := http.NewRequest(method, link, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), linkCheckTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, method, link, nil)
 	if err != nil {
 		return 0, err
 	}

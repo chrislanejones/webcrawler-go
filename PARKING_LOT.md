@@ -88,7 +88,31 @@ auditor wants.
 The backoff is exponential but blind. When a server says exactly how long to
 wait, use it.
 
-## 6. No CI — LOW
+## 6. No CI — FIXED
 
-`gofmt` had never been run on `internal/crawler`. A small workflow running
-build, vet, gofmt and govulncheck would stop that drifting again.
+`gofmt` had never been run on `internal/crawler`. `.github/workflows/ci.yml`
+now runs gofmt, vet, build, `go test -race` and govulncheck on every push and
+pull request. It reads the Go version from `go.mod`, so it follows the
+project forward rather than pinning a version that goes stale.
+
+## 7. Dead links cost two timeouts each — FIXED
+
+Found while writing the tests: a link on an unreachable host was probed with
+HEAD, waited out the full client timeout, then probed again with GET and
+waited it out a second time. One dead host cost 60 seconds.
+
+A transport error is now reported after the first attempt. DNS failures,
+refused connections and timeouts fail identically for GET, so the retry only
+bought a second wait. Link checks also got their own 15 second deadline,
+separate from the 30 second page-fetch timeout, since verifying a link is
+cheaper than fetching a page to crawl.
+
+## Tests
+
+`internal/crawler/crawler_test.go` covers the classification logic against a
+local server that imitates the awkward cases: a CDN that rejects HEAD with
+405, one that answers HEAD with 404 but GET with 200, a firewall 403, a 429,
+a 503, a real 404 and a 500. It also asserts the transport negotiates HTTP/2
+and that the user agents are not the 2023 ones again.
+
+Run them with `go test ./...`. The suite takes well under a second.
