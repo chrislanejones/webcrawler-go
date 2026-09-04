@@ -129,6 +129,7 @@ type Stats struct {
 	HTMLScanned       int64
 	ImagesChecked     int64
 	LinksChecked      int64
+	LinksBlocked      int64
 	SkippedExternal   int64
 	Status2xx         int64
 	Status3xx         int64
@@ -164,27 +165,64 @@ var (
 	successMu     sync.Mutex
 )
 
+// Keep these close to current. A user agent claiming a browser several years
+// old is itself a bot signal, which is what the rotation is trying to avoid.
+// Last refreshed September 2026.
 var userAgents = []string{
-	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
-	"Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
-	"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
+	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+	"Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:154.0) Gecko/20100101 Firefox/154.0",
+	"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36",
+	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36 Edg/152.0.0.0",
+}
+
+// UserAgentFor returns a user agent from the rotation. Callers outside this
+// package use it so there is one list to keep current, not several.
+func UserAgentFor(i int) string {
+	if i < 0 {
+		i = -i
+	}
+	return userAgents[i%len(userAgents)]
+}
+
+// NewTransport returns the transport every client in this program should use.
+// The ForceAttemptHTTP2 flag is the point of it: setting TLSClientConfig on a
+// custom Transport otherwise leaves the client on HTTP/1.1, which contradicts
+// the browser it claims to be.
+func NewTransport() *http.Transport {
+	return &http.Transport{
+		TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
+		ForceAttemptHTTP2:   true,
+		DisableKeepAlives:   false,
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 10,
+		IdleConnTimeout:     90 * time.Second,
+	}
+}
+
+// BrowserHeaders sets the header block a real browser sends alongside its user
+// agent. Sending a Chrome user agent with no Accept or Accept-Language is an
+// easy bot tell, so every outbound request should carry these.
+// Accept-Encoding is deliberately absent: setting it by hand switches off Go's
+// transparent decompression.
+func BrowserHeaders(req *http.Request, ua string) {
+	req.Header.Set("User-Agent", ua)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	req.Header.Set("Upgrade-Insecure-Requests", "1")
+	req.Header.Set("Sec-Fetch-Dest", "document")
+	req.Header.Set("Sec-Fetch-Mode", "navigate")
+	req.Header.Set("Sec-Fetch-Site", "none")
+	req.Header.Set("Sec-Fetch-User", "?1")
 }
 
 func init() {
 	jar, _ := cookiejar.New(nil)
 
 	httpClient = &http.Client{
-		Timeout: 30 * time.Second,
-		Jar:     jar,
-		Transport: &http.Transport{
-			TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
-			DisableKeepAlives:   false,
-			MaxIdleConns:        100,
-			MaxIdleConnsPerHost: 10,
-			IdleConnTimeout:     90 * time.Second,
-		},
+		Timeout:   30 * time.Second,
+		Jar:       jar,
+		Transport: NewTransport(),
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 10 {
 				return fmt.Errorf("stopped after 10 redirects")
@@ -513,7 +551,7 @@ func createCSV() {
 	case ModeSearchLink, ModeSearchWord:
 		w.Write([]string{"URL", "ContentType", "FoundIn", "Target", "Timestamp"})
 	case ModeBrokenLinks:
-		w.Write([]string{"BrokenURL", "FoundOnPage", "StatusCode", "Error", "Timestamp"})
+		w.Write([]string{"Result", "URL", "FoundOnPage", "StatusCode", "Error", "Timestamp"})
 	case ModeOversizedImages:
 		w.Write([]string{"ImageURL", "FoundOnPage", "SizeKB", "ContentType", "Timestamp"})
 	}
@@ -542,7 +580,23 @@ func writeBrokenLink(brokenURL, foundOnPage string, statusCode int, errMsg strin
 
 	w := csv.NewWriter(f)
 	defer w.Flush()
-	w.Write([]string{brokenURL, foundOnPage, strconv.Itoa(statusCode), errMsg, time.Now().Format(time.RFC3339)})
+	w.Write([]string{"BROKEN", brokenURL, foundOnPage, strconv.Itoa(statusCode), errMsg, time.Now().Format(time.RFC3339)})
+}
+
+// writeBlockedLink records a link the crawler could not verify because the far
+// end refused the request. These are reported separately from broken links:
+// the page is probably fine, it just will not answer a script.
+func writeBlockedLink(blockedURL, foundOnPage string, statusCode int) {
+	csvMu.Lock()
+	defer csvMu.Unlock()
+
+	f, _ := os.OpenFile(resultFile, os.O_APPEND|os.O_WRONLY, 0644)
+	defer f.Close()
+
+	w := csv.NewWriter(f)
+	defer w.Flush()
+	w.Write([]string{"BLOCKED", blockedURL, foundOnPage, strconv.Itoa(statusCode),
+		"Refused by bot protection, verify in a browser", time.Now().Format(time.RFC3339)})
 }
 
 func writeOversizedImage(imageURL, foundOnPage string, sizeKB int64, contentType string) {
@@ -846,25 +900,69 @@ func checkLink(href, pageURL string) {
 	resolved := pageBase.ResolveReference(u).String()
 	atomic.AddInt64(&stats.LinksChecked, 1)
 
-	req, err := http.NewRequest("HEAD", resolved, nil)
-	if err != nil {
-		return
+	// Try HEAD first because it is cheap, then fall back to GET. Plenty of
+	// CDNs answer HEAD with 405, or with a 404 they would not give a GET,
+	// so a HEAD-only checker invents broken links.
+	status, err := requestLink("HEAD", resolved)
+	if err != nil || status == http.StatusMethodNotAllowed || status >= 400 {
+		var getErr error
+		status, getErr = requestLink("GET", resolved)
+		if getErr != nil {
+			err = getErr
+		} else {
+			err = nil
+		}
 	}
-	req.Header.Set("User-Agent", userAgents[0])
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
 	if err != nil {
 		writeBrokenLink(resolved, pageURL, 0, err.Error())
 		fmt.Printf("\n💔 BROKEN LINK (error): %s\n", resolved)
 		return
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode >= 400 {
-		writeBrokenLink(resolved, pageURL, resp.StatusCode, http.StatusText(resp.StatusCode))
-		fmt.Printf("\n💔 BROKEN LINK (%d): %s\n", resp.StatusCode, resolved)
+	// A firewall refusing the request is not a dead page. Record it in its
+	// own category so the report does not read as a 404.
+	if isBlockedStatus(status) {
+		atomic.AddInt64(&stats.LinksBlocked, 1)
+		writeBlockedLink(resolved, pageURL, status)
+		fmt.Printf("\n🛡️  BLOCKED, NOT VERIFIED (%d): %s\n", status, resolved)
+		return
 	}
+
+	if status >= 400 {
+		writeBrokenLink(resolved, pageURL, status, http.StatusText(status))
+		fmt.Printf("\n💔 BROKEN LINK (%d): %s\n", status, resolved)
+	}
+}
+
+// isBlockedStatus reports whether a status means "I will not serve this
+// client" rather than "this page does not exist".
+func isBlockedStatus(status int) bool {
+	switch status {
+	case http.StatusForbidden, http.StatusTooManyRequests, http.StatusServiceUnavailable:
+		return true
+	}
+	return false
+}
+
+// requestLink performs one link check using the shared client, so the session
+// cookies the crawler established are reused and the request looks like the
+// browser the user agent claims.
+func requestLink(method, link string) (int, error) {
+	req, err := http.NewRequest(method, link, nil)
+	if err != nil {
+		return 0, err
+	}
+	BrowserHeaders(req, userAgents[0])
+	req.Header.Set("Sec-Fetch-Site", "cross-site")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+	return resp.StatusCode, nil
 }
 
 func extractAndCheckImages(body []byte, pageURL string) {

@@ -1,91 +1,94 @@
 # Parking Lot — webcrawler-go
 
-Findings from the September 4, 2026 update pass. Nothing here is committed
-behavior yet. Ranked by how much it costs you today.
+Findings from the September 4, 2026 update pass. Items 1 through 3 are fixed.
+Items 4 and 5 are still open.
 
 ---
 
-## 1. The client is HTTP/1.1 only while claiming to be Chrome — HIGH
+## 1. HTTP/1.1 while claiming to be Chrome — FIXED
 
-`internal/crawler/crawler.go:181`
+`internal/crawler/crawler.go`
 
-Setting `TLSClientConfig` on a custom `http.Transport` without
-`ForceAttemptHTTP2: true` turns off Go's automatic HTTP/2. Verified against
-cloudflare.com:
+Setting `TLSClientConfig` on a custom `http.Transport` turns off Go's
+automatic HTTP/2. Every browser in the user-agent list speaks HTTP/2, so a
+request that said "Chrome" and then negotiated HTTP/1.1 was a mismatch a CDN
+could see for free.
 
-| Transport                     | Negotiated |
-| ----------------------------- | ---------- |
-| Current crawler transport     | HTTP/1.1   |
-| Same, plus ForceAttemptHTTP2  | HTTP/2.0   |
-| Go's DefaultClient            | HTTP/2.0   |
+All clients now come from `crawler.NewTransport()`, which sets
+`ForceAttemptHTTP2`. Measured against six hosts that had refused the old
+client:
 
-Every browser in the user-agent list speaks HTTP/2. A request that says
-"Chrome 120" and then negotiates HTTP/1.1 is a mismatch a CDN can see for
-free, and Cloudflare, Akamai and Fastly all look at it. This is the single
-most likely reason a site blocks the crawler but not the browser.
+| Host                  | Before   | After    |
+| --------------------- | -------- | -------- |
+| doe.virginia.gov      | 403      | **200**  |
+| deq.virginia.gov      | 403      | **200**  |
+| amtrak.com            | timeout  | **200**  |
+| wric.com              | 403      | 403      |
+| wavy.com              | 403      | 403      |
+| wfxrtv.com            | 403      | 403      |
 
-Fix is one line: add `ForceAttemptHTTP2: true` to the Transport.
+Three of six became reachable, with no regressions. The three Nexstar
+stations refuse both clients and need a real browser, which is what the new
+BLOCKED category is for.
 
-## 2. Broken Link mode reports firewalls as broken links — HIGH
+## 2. Broken Link mode reported firewalls as broken links — FIXED
 
-`internal/crawler/crawler.go:836` (`checkLink`)
+`internal/crawler/crawler.go` (`checkLink`)
 
-Three separate problems in one function, all of which manufacture false
-"broken link" rows:
+Three problems, all fixed:
 
-- **403 is treated as broken.** `resp.StatusCode >= 400` catches it. A 403
-  from a WAF means "I don't like your client", not "the page is gone".
-- **HEAD with no GET fallback.** Plenty of CDNs answer HEAD with 405, or
-  with a 404 they would not give a GET.
-- **No session, no browser headers, 10s timeout.** It builds its own bare
-  `http.Client`, so it does not share the cookie jar the crawler just spent
-  three phases establishing, and it sends a User-Agent with no `Accept` or
-  `Accept-Language`. Real Chrome always sends those.
+- **403 was treated as broken.** 403, 429 and 503 now record as BLOCKED,
+  meaning the page could not be verified, not that it is missing.
+- **HEAD with no fallback.** Falls back to GET when HEAD is not 2xx, so a CDN
+  answering HEAD with 405 no longer invents a dead link.
+- **No session, no browser headers.** It built its own bare client, so it
+  never saw the cookies the crawler had established. It now uses the shared
+  client and the same header block as everything else.
 
-Measured against the governor.virginia.gov newsroom, 247 pages and 953
-distinct links:
+On the governor.virginia.gov newsroom, 247 pages and 953 links, this removes
+**21 false broken links**: 18 alive pages that answered 403, and 3 where
+HEAD failed but GET returned 200.
 
-| False positive source            | Count |
-| -------------------------------- | ----- |
-| Alive but answered 403 to script  | 18    |
-| HEAD failed, GET returned 200     | 3     |
-| **Total bogus "broken links"**    | **21** |
+The broken-links CSV gained a `Result` column, so the schema is now
+`Result, URL, FoundOnPage, StatusCode, Error, Timestamp`. Anything parsing
+the old five-column file needs updating.
 
-Suggested behavior: fall back to GET when HEAD is not 2xx, reuse
-`httpClient` so cookies carry, send the same headers as the crawler, raise
-the timeout to match, and split the report into "broken" and "blocked" so a
-403 lands in its own column instead of being called a 404.
+## 3. Stale user agents and scattered headers — FIXED
 
-## 3. User agents are three years stale — MEDIUM
+The list claimed Chrome 120 and Firefox 121, both from December 2023.
+`main.go` kept a second copy of the list plus a hardcoded Chrome 120 in
+`quickTest`, so the connection tester that decides whether a site is blocked
+was using the worst headers in the program.
 
-`internal/crawler/crawler.go:167`
+There is now one list, refreshed to Chrome 150-152 and Firefox 154, and one
+`BrowserHeaders` helper that adds the `Sec-Fetch-*` set real Chrome always
+sends. Sitemap and JSON feed fetches use it too. The JSON feed path sends
+the CORS variant, since it is a script fetch rather than a navigation.
 
-Chrome 120 and Firefox 121 shipped in December 2023. Claiming a browser
-that old in late 2026 is itself a signal. Refresh the list, and consider
-pulling the version from a constant so it is a one-line bump next time.
+---
+
+## Still open
 
 ## 4. TLS verification is off everywhere, permanently — MEDIUM
 
-`internal/crawler/crawler.go:182` — `InsecureSkipVerify: true`
+`internal/crawler/crawler.go` — `InsecureSkipVerify: true`
 
-This does solve a real problem. vaemergency.gov currently serves an
-incomplete chain, missing the DigiCert G2 intermediate, so a verifying
-client fails where Chrome succeeds. But blanket-disabling verification
-hides that finding instead of reporting it, and accepts any MITM.
+This solves a real problem. vaemergency.gov currently serves an incomplete
+chain, missing the DigiCert G2 intermediate, so a verifying client fails
+where Chrome succeeds. But disabling verification everywhere hides that
+finding instead of reporting it, and accepts any MITM.
 
 Better: verify by default, and on `x509.UnknownAuthorityError` retry once
 with verification off and mark the row "TLS chain incomplete". That turns a
 silently swallowed problem into a reportable one, which is what a site
-auditor actually wants.
+auditor wants.
 
 ## 5. 429 ignores Retry-After — LOW
 
-`internal/crawler/crawler.go:670`
+The backoff is exponential but blind. When a server says exactly how long to
+wait, use it.
 
-The backoff is exponential but blind. When a server tells you exactly how
-long to wait, use it.
+## 6. No CI — LOW
 
-## 6. Formatting and hygiene — DONE
-
-`internal/crawler` had never been through gofmt. Fixed in the update commit.
-Worth a CI check so it does not drift again.
+`gofmt` had never been run on `internal/crawler`. A small workflow running
+build, vet, gofmt and govulncheck would stop that drifting again.

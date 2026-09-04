@@ -190,8 +190,15 @@ func fetchJSONFeed(feedURL string, opts JSONFeedOptions) ([]FeedItem, error) {
 		return nil, err
 	}
 
-	req.Header.Set("User-Agent", userAgents[0])
-	req.Header.Set("Accept", "application/json, */*")
+	BrowserHeaders(req, userAgents[0])
+	// This endpoint returns JSON, and it is fetched the way the page's own
+	// script fetches it, not as a top-level navigation.
+	req.Header.Set("Accept", "application/json, text/plain, */*")
+	req.Header.Set("Sec-Fetch-Dest", "empty")
+	req.Header.Set("Sec-Fetch-Mode", "cors")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	req.Header.Del("Upgrade-Insecure-Requests")
+	req.Header.Del("Sec-Fetch-User")
 
 	resp, err := httpClient.Do(req)
 	if err != nil {

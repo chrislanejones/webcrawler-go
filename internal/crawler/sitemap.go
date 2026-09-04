@@ -201,10 +201,7 @@ func fetchForSitemap(link string, includeInSitemap bool) {
 		return
 	}
 
-	req.Header.Set("User-Agent", userAgents[0])
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.5")
-	req.Header.Set("Connection", "keep-alive")
+	BrowserHeaders(req, userAgents[0])
 
 	resp, err := httpClient.Do(req)
 	if err != nil {

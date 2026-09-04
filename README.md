@@ -104,6 +104,8 @@ To find the feed for a site, open the listing page, look at the page source or t
 
 The crawler employs multiple techniques to handle bot protection:
 
+- **HTTP/2**: Negotiates HTTP/2 like a real browser. A client that sends a Chrome user agent and then speaks HTTP/1.1 is a mismatch CDNs use to spot bots
+- **Full browser headers**: Sends the `Sec-Fetch-*` set alongside `Accept` and `Accept-Language`, so requests match the browser they claim to be
 - **Alternative Entry Points**: Automatically tests 17+ common pages (`/about`, `/contact`, `/sitemap.xml`, etc.) when the main page is blocked
 - **Custom Entry Point**: Specify your own "back door" URL
 - **Multi-Phase Crawling**: Start from working pages, then retry blocked pages with established session cookies
@@ -495,9 +497,21 @@ https://example.com/docs/terms.pdf,application/pdf,PDF,privacy policy,2024-01-15
 **Broken Links Mode:**
 
 ```csv
-BrokenURL,FoundOnPage,StatusCode,Error,Timestamp
-https://example.com/old-page,https://example.com/links,404,Not Found,2024-01-15T14:32:45Z
+Result,URL,FoundOnPage,StatusCode,Error,Timestamp
+BROKEN,https://example.com/old-page,https://example.com/links,404,Not Found,2024-01-15T14:32:45Z
+BLOCKED,https://news.example.com/story,https://example.com/links,403,Refused by bot protection,2024-01-15T14:33:02Z
 ```
+
+The `Result` column separates two things that are not the same:
+
+| Result      | Meaning                                                             |
+| ----------- | ------------------------------------------------------------------- |
+| **BROKEN**  | The page is gone. A 404, a 5xx, a DNS failure, a refused connection |
+| **BLOCKED** | A firewall refused the request. The page itself is probably fine    |
+
+A 403 from a web application firewall means "I don't like your client", not
+"this page is missing". Filter on `Result` to get a clean list of genuinely
+dead links, then spot-check the BLOCKED rows in a browser.
 
 **Oversized Images Mode:**
 

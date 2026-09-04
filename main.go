@@ -1,7 +1,6 @@
 package main
 
 import (
-	"crypto/tls"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -604,10 +603,8 @@ func suggestAndTestAlternatives(siteURL string) []string {
 
 func quickTest(testURL string) (success bool, blocked bool) {
 	client := &http.Client{
-		Timeout: 10 * time.Second,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		},
+		Timeout:   10 * time.Second,
+		Transport: crawler.NewTransport(),
 	}
 
 	req, err := http.NewRequest("GET", testURL, nil)
@@ -615,9 +612,7 @@ func quickTest(testURL string) (success bool, blocked bool) {
 		return false, false
 	}
 
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.5")
+	crawler.BrowserHeaders(req, crawler.UserAgentFor(0))
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -648,22 +643,14 @@ func quickTest(testURL string) (success bool, blocked bool) {
 }
 
 func testConnectionWithRetry(siteURL string, maxAttempts int) (success bool, attempts int, blocked bool) {
-	userAgents := []string{
-		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-		"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
-		"Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
-	}
-
 	wasBlocked := false
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		fmt.Printf("   🔄 Attempt %d/%d", attempt, maxAttempts)
 
 		client := &http.Client{
-			Timeout: time.Duration(10+attempt*5) * time.Second,
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-			},
+			Timeout:   time.Duration(10+attempt*5) * time.Second,
+			Transport: crawler.NewTransport(),
 		}
 
 		req, err := http.NewRequest("GET", siteURL, nil)
@@ -672,11 +659,7 @@ func testConnectionWithRetry(siteURL string, maxAttempts int) (success bool, att
 			return false, attempt, false
 		}
 
-		req.Header.Set("User-Agent", userAgents[attempt%len(userAgents)])
-		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-		req.Header.Set("Accept-Language", "en-US,en;q=0.5")
-		req.Header.Set("Connection", "keep-alive")
-		req.Header.Set("Upgrade-Insecure-Requests", "1")
+		crawler.BrowserHeaders(req, crawler.UserAgentFor(attempt))
 
 		startTime := time.Now()
 		resp, err := client.Do(req)
