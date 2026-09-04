@@ -184,12 +184,12 @@ func crawlForPDF(link string) {
 
 func capturePage(pageURL string) []string {
 	var extractedLinks []string
-	
+
 	// Track current page for status display
 	pdfCurrentMu.Lock()
 	pdfCurrentPage = pageURL
 	pdfCurrentMu.Unlock()
-	
+
 	// Create a safe filename from URL
 	filename := sanitizeFilename(pageURL)
 
@@ -265,7 +265,7 @@ func capturePage(pageURL string) []string {
 		chromedp.ActionFunc(func(ctx context.Context) error {
 			var lastLength int
 			stableCount := 0
-			
+
 			// Wait until body content stabilizes (stops growing)
 			for attempt := 0; attempt < 30; attempt++ {
 				var currentLength int
@@ -274,7 +274,7 @@ func capturePage(pageURL string) []string {
 					time.Sleep(500 * time.Millisecond)
 					continue
 				}
-				
+
 				// Check if content has stabilized
 				if currentLength > 500 && currentLength == lastLength {
 					stableCount++
@@ -285,11 +285,11 @@ func capturePage(pageURL string) []string {
 				} else {
 					stableCount = 0
 				}
-				
+
 				lastLength = currentLength
 				time.Sleep(500 * time.Millisecond)
 			}
-			
+
 			// Final fallback wait
 			time.Sleep(2 * time.Second)
 			return nil
@@ -306,10 +306,10 @@ func capturePage(pageURL string) []string {
 	}
 
 	// Add screenshot capture if needed
-	needsScreenshot := pdfCaptureFormat == CaptureImagesOnly || 
-		pdfCaptureFormat == CaptureBoth || 
+	needsScreenshot := pdfCaptureFormat == CaptureImagesOnly ||
+		pdfCaptureFormat == CaptureBoth ||
 		pdfCaptureFormat == CaptureCMYKTIFF
-	
+
 	if needsScreenshot {
 		actions = append(actions, chromedp.ActionFunc(func(ctx context.Context) error {
 			// Get page dimensions
@@ -345,10 +345,10 @@ func capturePage(pageURL string) []string {
 	}
 
 	// Add PDF generation if needed
-	needsPDF := pdfCaptureFormat == CapturePDFOnly || 
-		pdfCaptureFormat == CaptureBoth || 
+	needsPDF := pdfCaptureFormat == CapturePDFOnly ||
+		pdfCaptureFormat == CaptureBoth ||
 		pdfCaptureFormat == CaptureCMYKPDF
-	
+
 	if needsPDF {
 		actions = append(actions, chromedp.ActionFunc(func(ctx context.Context) error {
 			var err error
@@ -395,7 +395,7 @@ func capturePage(pageURL string) []string {
 			atomic.AddInt64(&pdfStats.Errors, 1)
 			return extractedLinks
 		}
-		
+
 		// Convert to CMYK using Ghostscript
 		cmykPdfPath := filepath.Join(pdfOutputDir, filename+"_cmyk.pdf")
 		if err := convertToCMYKPDF(tempPdfPath, cmykPdfPath); err != nil {
@@ -424,7 +424,7 @@ func capturePage(pageURL string) []string {
 			atomic.AddInt64(&pdfStats.Errors, 1)
 			return extractedLinks
 		}
-		
+
 		// Convert to CMYK TIFF using ImageMagick
 		tiffPath := filepath.Join(pdfOutputDir, filename+"_cmyk.tiff")
 		if err := convertToCMYKTIFF(tempPngPath, tiffPath); err != nil {
@@ -445,26 +445,26 @@ func capturePage(pageURL string) []string {
 			if href == "" {
 				continue
 			}
-			
+
 			// Parse and validate the link
 			u, err := url.Parse(href)
 			if err != nil {
 				continue
 			}
-			
+
 			// Only follow same-domain links
 			if u.Host != pdfBaseURL.Host {
 				atomic.AddInt64(&pdfStats.SkippedExternal, 1)
 				continue
 			}
-			
+
 			// Apply path filter if set (only crawl URLs within the specified path)
 			if pdfPathFilter != "" && !strings.HasPrefix(u.Path, pdfPathFilter) {
 				continue
 			}
-			
+
 			extractedLinks = append(extractedLinks, href)
-			
+
 			// Detect pagination pattern and generate additional page URLs
 			// Check for ?page=N pattern
 			if q := u.Query(); q.Get("page") != "" {
@@ -481,19 +481,19 @@ func capturePage(pageURL string) []string {
 			}
 		}
 	}
-	
+
 	// If this is a listing page (index or no specific article), try common pagination patterns
 	parsedPage, _ := url.Parse(pageURL)
 	if parsedPage != nil {
 		// Normalize paths for comparison (remove trailing slash)
 		normalizedPath := strings.TrimSuffix(parsedPage.Path, "/")
 		normalizedFilter := strings.TrimSuffix(pdfPathFilter, "/")
-		
+
 		// Check if this is a listing/index page (ends with / or matches filter path exactly)
-		isListingPage := strings.HasSuffix(parsedPage.Path, "/") || 
+		isListingPage := strings.HasSuffix(parsedPage.Path, "/") ||
 			normalizedPath == normalizedFilter ||
 			parsedPage.Path == pdfPathFilter
-		
+
 		if isListingPage {
 			// Try adding ?page=N if not already present
 			if parsedPage.Query().Get("page") == "" {
@@ -507,7 +507,7 @@ func capturePage(pageURL string) []string {
 			}
 		}
 	}
-	
+
 	return extractedLinks
 }
 
@@ -586,7 +586,7 @@ func normalizeURL(link string) string {
 func printPDFLiveStats(stop chan bool) {
 	ticker := time.NewTicker(1 * time.Second) // Update more frequently
 	defer ticker.Stop()
-	
+
 	spinChars := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 	spinIdx := 0
 
@@ -601,7 +601,7 @@ func printPDFLiveStats(stop chan bool) {
 			pdfs := atomic.LoadInt64(&pdfStats.PDFsGenerated)
 			screenshots := atomic.LoadInt64(&pdfStats.ScreenshotsGen)
 			errors := atomic.LoadInt64(&pdfStats.Errors)
-			
+
 			// Get current page
 			pdfCurrentMu.Lock()
 			currentPage := pdfCurrentPage
@@ -611,7 +611,7 @@ func printPDFLiveStats(stop chan bool) {
 			if elapsed.Seconds() < 1 {
 				pagesPerSec = 0
 			}
-			
+
 			// Build progress bar based on visited vs queued
 			barWidth := 20
 			var pct int64 = 0
@@ -625,7 +625,7 @@ func printPDFLiveStats(stop chan bool) {
 			if filled > barWidth {
 				filled = barWidth
 			}
-			
+
 			bar := ""
 			for i := 0; i < filled; i++ {
 				bar += "█"
@@ -633,26 +633,26 @@ func printPDFLiveStats(stop chan bool) {
 			for i := filled; i < barWidth; i++ {
 				bar += "░"
 			}
-			
+
 			// Spinner for activity
 			spinner := spinChars[spinIdx%len(spinChars)]
 			spinIdx++
-			
+
 			// Truncate current page URL for display
 			displayURL := currentPage
 			if len(displayURL) > 60 {
 				displayURL = "..." + displayURL[len(displayURL)-57:]
 			}
-			
+
 			// Clear lines and print status
 			fmt.Print("\033[2K\r") // Clear line 1
-			
+
 			// Format stats based on capture mode - show queue progress
 			pending := queued - visited
 			if pending < 0 {
 				pending = 0
 			}
-			
+
 			switch pdfCaptureFormat {
 			case CapturePDFOnly:
 				fmt.Printf("%s \033[32m[%s]\033[0m %3d%% │ ⏱ %s │ 📑 %d captured │ ⏳ %d pending │ ❌ %d │ %.1f/s\n",
@@ -670,13 +670,13 @@ func printPDFLiveStats(stop chan bool) {
 				fmt.Printf("%s \033[32m[%s]\033[0m %3d%% │ ⏱ %s │ 🎨 %d TIFF │ ⏳ %d pending │ ❌ %d │ %.1f/s\n",
 					spinner, bar, pct, formatDuration(elapsed), screenshots, pending, errors, pagesPerSec)
 			}
-			
+
 			// Show current page on second line
 			fmt.Print("\033[2K") // Clear line 2
 			if displayURL != "" {
 				fmt.Printf("   \033[2m→ %s\033[0m", displayURL)
 			}
-			
+
 			// Move cursor up for next update
 			fmt.Print("\033[1A\r")
 		}

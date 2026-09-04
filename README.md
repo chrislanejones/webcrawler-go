@@ -1,16 +1,16 @@
 # 🕷️ Web Crawler - Cloudflare Buster Edition
 
 ![Golang Web Crawler Banner with Spider](Golang-Web-Crawler-Banner.jpg)
-A powerful Go-based web crawler with an interactive terminal wizard interface. Features intelligent Cloudflare bypass strategies, comprehensive statistics, and support for HTML, PDF, and DOCX content scanning.
+A Go web crawler with an interactive terminal wizard. It works on sites behind bot protection, and it reads HTML, PDF, and DOCX content rather than just HTML.
 
-![Go Version](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat&logo=go)
+![Go Version](https://img.shields.io/badge/Go-1.26+-00ADD8?style=flat&logo=go)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
 
 ---
 
 ## ✨ Features
 
-### 🎯 Six Powerful Modes
+### 🎯 Seven Modes
 
 | Mode                     | Description                                                                |
 | ------------------------ | -------------------------------------------------------------------------- |
@@ -20,6 +20,7 @@ A powerful Go-based web crawler with an interactive terminal wizard interface. F
 | **🖼️ Oversized Images**  | Find images exceeding a specified file size threshold                      |
 | **📄 Page Capture**      | Generate PDFs, screenshots, or CMYK files for every page on the site       |
 | **🗺️ XML Sitemap**       | Generate a standards-compliant XML sitemap by crawling the entire site     |
+| **📡 JSON Feed Capture** | Capture pages listed in a JSON feed, for sites that build listings in JS   |
 
 ### 🌲 Path Filtering (Crawl Subsections)
 
@@ -66,6 +67,39 @@ Generate a standards-compliant XML sitemap for any website:
 
 The generated sitemap follows the [sitemaps.org protocol](https://www.sitemaps.org/protocol.html) and is compatible with all major search engines.
 
+### 📡 JSON Feed Capture
+
+Some sites ship an empty listing page and build the list of articles in the browser from a JSON endpoint. A normal crawl of those pages finds nothing, because there are no links in the HTML to follow.
+
+This mode skips the listing page and reads the feed directly:
+
+```
+📡 Enter the JSON feed URL
+   Direct URL to the JSON endpoint (e.g., /newsroom/feed.json)
+   → https://www.example.gov/newsroom/news-releases/newsfeed.php
+
+🏷️  Filter by tag (optional)
+   Only capture items containing this tag
+   → news
+
+📄 What format do you want to capture?
+   → 📑🖼️  Both PDF + Images
+```
+
+The crawler reads every item in the feed, applies the tag filter if you set one, and captures each linked page in the format you picked.
+
+Feed items are read with these field names by default. They cover the common shape of a CMS news feed:
+
+| Field           | Default key  | Holds                       |
+| --------------- | ------------ | --------------------------- |
+| `LinkField`     | `link`       | URL of the article          |
+| `HeadlineField` | `headline`   | Article title               |
+| `DateField`     | `date`       | Display date                |
+| `BriefField`    | `brief`      | Summary or teaser text      |
+| `TagsField`     | `tags`       | Tags used by the tag filter |
+
+To find the feed for a site, open the listing page, look at the page source or the network tab, and find the URL the page fetches its articles from.
+
 ### 🛡️ Cloudflare Bypass Strategies
 
 The crawler employs multiple techniques to handle bot protection:
@@ -95,7 +129,7 @@ Real-time and final statistics include:
 
 ### Prerequisites
 
-- Go 1.21 or higher
+- Go 1.26 or higher
 - `pdfcpu` CLI tool (for PDF text extraction)
 - Chrome or Chromium (for page capture mode)
 - Ghostscript (optional, for CMYK PDF output)
@@ -104,9 +138,10 @@ Real-time and final statistics include:
 ### Installation
 
 ```bash
-# Clone or download the project
-git clone <repository-url>
-cd webcrawler
+# Clone the project
+git clone https://github.com/chrislanejones/webcrawler-go.git
+# or: git clone https://codeberg.org/chrislanejones/webcrawler-go.git
+cd webcrawler-go
 
 # Install dependencies
 go mod tidy
@@ -132,7 +167,7 @@ sudo apt install imagemagick
 ### Running
 
 ```bash
-go run main.go
+go run .
 ```
 
 The interactive wizard will guide you through the configuration.
@@ -146,7 +181,7 @@ The interactive wizard will guide you through the configuration.
 ```
 ╔═══════════════════════════════════════════════════════════════════╗
 ║                   🕷️  Web Crawler Wizard  🕷️                       ║
-║                        v2.1 - Cloudflare Buster                   ║
+║                              v2.5                                 ║
 ╚═══════════════════════════════════════════════════════════════════╝
 
 🌐 What site do you want to check?
@@ -165,9 +200,10 @@ The interactive wizard will guide you through the configuration.
    │  4. 🖼️  Search for oversized images                     │
    │  5. 📄 Generate PDF/Image for every page                │
    │  6. 🗺️  Generate XML sitemap                            │
+   │  7. 📡 Capture pages from JSON feed                     │
    └─────────────────────────────────────────────────────────┘
 
-   Enter choice (1-6): 2
+   Enter choice (1-7): 2
 
 📝 Enter the word or phrase to search for:
    → privacy policy
@@ -573,6 +609,7 @@ webcrawler/
 └── internal/
     ├── crawler/
     │   ├── crawler.go           # Core crawling logic & statistics
+    │   ├── jsonfeed.go          # JSON feed reader & capture
     │   ├── pdfcapture.go        # Page capture with Chrome/PDF/CMYK
     │   └── sitemap.go           # XML sitemap generation
     └── parser/
@@ -674,26 +711,29 @@ If the sitemap has no URLs:
 
 ```bash
 # Build for current platform
-go build -o webcrawler main.go
+go build -o webcrawler .
 
 # Cross-compile for Linux
-GOOS=linux GOARCH=amd64 go build -o webcrawler-linux main.go
+GOOS=linux GOARCH=amd64 go build -o webcrawler-linux .
 
 # Cross-compile for Windows
-GOOS=windows GOARCH=amd64 go build -o webcrawler.exe main.go
+GOOS=windows GOARCH=amd64 go build -o webcrawler.exe .
 
 # Cross-compile for macOS
-GOOS=darwin GOARCH=amd64 go build -o webcrawler-mac main.go
+GOOS=darwin GOARCH=amd64 go build -o webcrawler-mac .
 ```
 
 ---
 
 ## 📝 Dependencies
 
-- [golang.org/x/net](https://pkg.go.dev/golang.org/x/net) - HTML parsing
-- [baliance.com/gooxml](https://github.com/baliance/gooxml) - DOCX parsing
-- [pdfcpu](https://github.com/pdfcpu/pdfcpu) - PDF text extraction (external CLI)
-- [chromedp](https://github.com/chromedp/chromedp) - Chrome DevTools Protocol (for page capture)
+| Package                                                              | Version  | Used for                            |
+| -------------------------------------------------------------------- | -------- | ----------------------------------- |
+| [golang.org/x/net](https://pkg.go.dev/golang.org/x/net)              | v0.58.0  | HTML parsing                        |
+| [chromedp](https://github.com/chromedp/chromedp)                     | v0.16.0  | Chrome DevTools Protocol, capture   |
+| [huh](https://github.com/charmbracelet/huh)                          | v1.0.0   | Terminal wizard forms               |
+| [baliance.com/gooxml](https://github.com/baliance/gooxml)            | v1.0.1   | DOCX parsing                        |
+| [pdfcpu](https://github.com/pdfcpu/pdfcpu)                           | latest   | PDF text extraction (external CLI)  |
 
 ---
 

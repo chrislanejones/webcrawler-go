@@ -40,15 +40,15 @@ type JSONFeedStats struct {
 }
 
 var (
-	jsonFeedStats      JSONFeedStats
-	jsonFeedStartTime  time.Time
-	jsonFeedOutputDir  string
-	jsonFeedFormat     CaptureFormat
-	jsonFeedBaseURL    *url.URL
-	jsonFeedWg         sync.WaitGroup
-	jsonFeedSema       chan struct{}
-	jsonFeedCSVFile    string
-	jsonFeedCSVMu      sync.Mutex
+	jsonFeedStats       JSONFeedStats
+	jsonFeedStartTime   time.Time
+	jsonFeedOutputDir   string
+	jsonFeedFormat      CaptureFormat
+	jsonFeedBaseURL     *url.URL
+	jsonFeedWg          sync.WaitGroup
+	jsonFeedSema        chan struct{}
+	jsonFeedCSVFile     string
+	jsonFeedCSVMu       sync.Mutex
 	jsonCancelRequested int32
 )
 

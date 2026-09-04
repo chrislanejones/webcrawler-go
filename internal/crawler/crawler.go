@@ -89,13 +89,13 @@ type SitemapOptions struct {
 }
 
 type JSONFeedOptions struct {
-	FeedURL       string   // URL of the JSON feed
-	TagFilter     string   // Optional tag to filter items by
-	LinkField     string   // JSON field containing the article link (default: "link")
-	HeadlineField string   // JSON field containing the headline (default: "headline")
-	DateField     string   // JSON field containing the date (default: "date")
-	BriefField    string   // JSON field containing the brief/summary (default: "brief")
-	TagsField     string   // JSON field containing tags (default: "tags")
+	FeedURL       string // URL of the JSON feed
+	TagFilter     string // Optional tag to filter items by
+	LinkField     string // JSON field containing the article link (default: "link")
+	HeadlineField string // JSON field containing the headline (default: "headline")
+	DateField     string // JSON field containing the date (default: "date")
+	BriefField    string // JSON field containing the brief/summary (default: "brief")
+	TagsField     string // JSON field containing tags (default: "tags")
 }
 
 type Config struct {
