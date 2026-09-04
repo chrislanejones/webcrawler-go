@@ -388,7 +388,7 @@ func main() {
 				huh.NewInput().
 					Title("Filter by tag (optional)").
 					Description("Only capture items containing this tag").
-					Placeholder("Governor74").
+					Placeholder("news").
 					Value(&tagFilter),
 			),
 			huh.NewGroup(
@@ -675,7 +675,6 @@ func testConnectionWithRetry(siteURL string, maxAttempts int) (success bool, att
 		req.Header.Set("User-Agent", userAgents[attempt%len(userAgents)])
 		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 		req.Header.Set("Accept-Language", "en-US,en;q=0.5")
-		req.Header.Set("Accept-Encoding", "gzip, deflate, br")
 		req.Header.Set("Connection", "keep-alive")
 		req.Header.Set("Upgrade-Insecure-Requests", "1")
 

@@ -1,7 +1,6 @@
 package crawler
 
 import (
-	"compress/gzip"
 	"context"
 	"encoding/csv"
 	"encoding/json"
@@ -193,7 +192,6 @@ func fetchJSONFeed(feedURL string, opts JSONFeedOptions) ([]FeedItem, error) {
 
 	req.Header.Set("User-Agent", userAgents[0])
 	req.Header.Set("Accept", "application/json, */*")
-	req.Header.Set("Accept-Encoding", "gzip, deflate")
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -205,17 +203,8 @@ func fetchJSONFeed(feedURL string, opts JSONFeedOptions) ([]FeedItem, error) {
 		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
-	var reader io.Reader = resp.Body
-	if resp.Header.Get("Content-Encoding") == "gzip" {
-		gzReader, err := gzip.NewReader(resp.Body)
-		if err != nil {
-			return nil, err
-		}
-		defer gzReader.Close()
-		reader = gzReader
-	}
-
-	body, err := io.ReadAll(reader)
+	// Go's http client automatically handles gzip decompression
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}

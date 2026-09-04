@@ -2,7 +2,6 @@ package crawler
 
 import (
 	"bytes"
-	"compress/gzip"
 	"crypto/tls"
 	"encoding/csv"
 	"fmt"
@@ -627,7 +626,8 @@ func fetchPage(link string, attempt int) (success bool, blocked bool, err error)
 	req.Header.Set("User-Agent", ua)
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.5")
-	req.Header.Set("Accept-Encoding", "gzip, deflate, br")
+	// Note: Don't set Accept-Encoding manually - let Go's http client handle it
+	// It will automatically add gzip and decompress responses
 	req.Header.Set("DNT", "1")
 	req.Header.Set("Connection", "keep-alive")
 	req.Header.Set("Upgrade-Insecure-Requests", "1")
@@ -678,17 +678,8 @@ func fetchPage(link string, attempt int) (success bool, blocked bool, err error)
 
 	contentType := resp.Header.Get("Content-Type")
 
-	var reader io.Reader = resp.Body
-	if resp.Header.Get("Content-Encoding") == "gzip" {
-		gzReader, err := gzip.NewReader(resp.Body)
-		if err != nil {
-			return false, false, err
-		}
-		defer gzReader.Close()
-		reader = gzReader
-	}
-
-	bodyBytes, err := io.ReadAll(reader)
+	// Go's http client automatically decompresses gzip when we don't set Accept-Encoding manually
+	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return false, false, err
 	}
@@ -733,7 +724,6 @@ func fetchPageForRetry(link string, retryAttempt int) bool {
 	req.Header.Set("User-Agent", ua)
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.5")
-	req.Header.Set("Accept-Encoding", "gzip, deflate, br")
 	req.Header.Set("DNT", "1")
 	req.Header.Set("Connection", "keep-alive")
 	req.Header.Set("Upgrade-Insecure-Requests", "1")
@@ -757,17 +747,7 @@ func fetchPageForRetry(link string, retryAttempt int) bool {
 
 	contentType := resp.Header.Get("Content-Type")
 
-	var reader io.Reader = resp.Body
-	if resp.Header.Get("Content-Encoding") == "gzip" {
-		gzReader, err := gzip.NewReader(resp.Body)
-		if err != nil {
-			return false
-		}
-		defer gzReader.Close()
-		reader = gzReader
-	}
-
-	bodyBytes, err := io.ReadAll(reader)
+	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return false
 	}

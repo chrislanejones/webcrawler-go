@@ -2,7 +2,6 @@ package crawler
 
 import (
 	"bytes"
-	"compress/gzip"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -205,7 +204,6 @@ func fetchForSitemap(link string, includeInSitemap bool) {
 	req.Header.Set("User-Agent", userAgents[0])
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.5")
-	req.Header.Set("Accept-Encoding", "gzip, deflate, br")
 	req.Header.Set("Connection", "keep-alive")
 
 	resp, err := httpClient.Do(req)
@@ -256,18 +254,8 @@ func fetchForSitemap(link string, includeInSitemap bool) {
 		}
 	}
 
-	// Read body
-	var reader io.Reader = resp.Body
-	if resp.Header.Get("Content-Encoding") == "gzip" {
-		gzReader, err := gzip.NewReader(resp.Body)
-		if err != nil {
-			return
-		}
-		defer gzReader.Close()
-		reader = gzReader
-	}
-
-	bodyBytes, err := io.ReadAll(reader)
+	// Read body - Go's http client automatically handles gzip decompression
+	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return
 	}
