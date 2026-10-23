@@ -4,14 +4,18 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/csv"
+	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -197,18 +201,91 @@ func UserAgentFor(i int) string {
 }
 
 // NewTransport returns the transport every client in this program should use.
-// The ForceAttemptHTTP2 flag is the point of it: setting TLSClientConfig on a
-// custom Transport otherwise leaves the client on HTTP/1.1, which contradicts
-// the browser it claims to be.
-func NewTransport() *http.Transport {
+// It verifies certificates, and falls back to an unverified connection for a
+// host whose certificate fails, recording why (see TLSProblems). A site
+// auditor wants to hear that a chain is broken, not to have it hidden, but
+// the crawl should still reach the site the way a browser that has the
+// missing intermediate cached would.
+func NewTransport() http.RoundTripper {
+	return &tlsFallback{
+		verified:   newHTTPTransport(false),
+		unverified: newHTTPTransport(true),
+	}
+}
+
+// newHTTPTransport builds the underlying transport. The ForceAttemptHTTP2
+// flag matters: setting TLSClientConfig on a custom Transport otherwise
+// leaves the client on HTTP/1.1, which contradicts the browser it claims to be.
+func newHTTPTransport(skipVerify bool) *http.Transport {
 	return &http.Transport{
-		TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
+		TLSClientConfig:     &tls.Config{InsecureSkipVerify: skipVerify},
 		ForceAttemptHTTP2:   true,
-		DisableKeepAlives:   false,
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 10,
 		IdleConnTimeout:     90 * time.Second,
 	}
+}
+
+type tlsFallback struct {
+	verified, unverified *http.Transport
+}
+
+// tlsProblems maps a host to why its certificate failed verification.
+var tlsProblems sync.Map
+
+func (t *tlsFallback) RoundTrip(req *http.Request) (*http.Response, error) {
+	if _, bad := tlsProblems.Load(req.URL.Host); bad {
+		return t.unverified.RoundTrip(req)
+	}
+	resp, err := t.verified.RoundTrip(req)
+	var certErr *tls.CertificateVerificationError
+	if err == nil || !errors.As(err, &certErr) {
+		return resp, err
+	}
+	// Only requests that can be sent twice are retried. The crawler only
+	// sends GET and HEAD, which have no body.
+	if req.Body != nil && req.GetBody == nil {
+		return resp, err
+	}
+	reason := describeCertError(certErr.Err)
+	if _, loaded := tlsProblems.LoadOrStore(req.URL.Host, reason); !loaded {
+		atomic.AddInt64(&stats.SSLErrors, 1)
+		fmt.Printf("\n🔒 TLS PROBLEM on %s: %s. Continuing without verification.\n", req.URL.Host, reason)
+	}
+	retry := req.Clone(req.Context())
+	if req.GetBody != nil {
+		if retry.Body, err = req.GetBody(); err != nil {
+			return nil, err
+		}
+	}
+	return t.unverified.RoundTrip(retry)
+}
+
+func describeCertError(err error) string {
+	var unknown x509.UnknownAuthorityError
+	var hostname x509.HostnameError
+	var invalid x509.CertificateInvalidError
+	switch {
+	case errors.As(err, &unknown):
+		return "certificate chain is incomplete or not trusted"
+	case errors.As(err, &hostname):
+		return "certificate does not match the host name"
+	case errors.As(err, &invalid) && invalid.Reason == x509.Expired:
+		return "certificate has expired or is not yet valid"
+	default:
+		return err.Error()
+	}
+}
+
+// TLSProblems returns each host whose certificate failed verification during
+// this run, with the reason.
+func TLSProblems() map[string]string {
+	out := map[string]string{}
+	tlsProblems.Range(func(k, v any) bool {
+		out[k.(string)] = v.(string)
+		return true
+	})
+	return out
 }
 
 // BrowserHeaders sets the header block a real browser sends alongside its user
@@ -556,6 +633,13 @@ func printFinalStats() {
 	fmt.Println("║                                                                   ║")
 	fmt.Println("╚═══════════════════════════════════════════════════════════════════╝")
 
+	if problems := TLSProblems(); len(problems) > 0 {
+		hosts := slices.Sorted(maps.Keys(problems))
+		fmt.Printf("\n🔒 TLS: %d host(s) failed certificate verification and were read without it:\n", len(hosts))
+		for _, h := range hosts {
+			fmt.Printf("      %s: %s\n", h, problems[h])
+		}
+	}
 	if reason := StopReason(); reason != "" {
 		fmt.Printf("\n⏹️  STOPPED EARLY: %s. Pages already found are in the results file.\n", reason)
 	}

@@ -267,7 +267,7 @@ func TestUserAgentsAreCurrent(t *testing.T) {
 // The transport must negotiate HTTP/2. Without ForceAttemptHTTP2 the client
 // speaks HTTP/1.1 while claiming to be Chrome, which CDNs read as a bot.
 func TestTransportAttemptsHTTP2(t *testing.T) {
-	if !NewTransport().ForceAttemptHTTP2 {
+	if !newHTTPTransport(false).ForceAttemptHTTP2 {
 		t.Fatal("ForceAttemptHTTP2 is off; the client will fall back to HTTP/1.1")
 	}
 
@@ -331,5 +331,30 @@ func TestBotProtectionIgnoresOrdinaryPages(t *testing.T) {
 		if !detectBotProtection(body) {
 			t.Errorf("%s: challenge page not detected", name)
 		}
+	}
+}
+
+func TestUntrustedCertificateIsReportedNotHidden(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "ok")
+	}))
+	defer srv.Close()
+	host := strings.TrimPrefix(srv.URL, "https://")
+
+	client := &http.Client{Transport: NewTransport()}
+	for range 2 {
+		resp, err := client.Get(srv.URL)
+		if err != nil {
+			t.Fatalf("request to a self-signed server should fall back, got %v", err)
+		}
+		resp.Body.Close()
+	}
+
+	reason, ok := TLSProblems()[host]
+	if !ok {
+		t.Fatalf("self-signed host %s not recorded; got %v", host, TLSProblems())
+	}
+	if !strings.Contains(reason, "not trusted") {
+		t.Errorf("reason = %q, want it to say the chain is not trusted", reason)
 	}
 }
