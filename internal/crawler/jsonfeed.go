@@ -200,7 +200,7 @@ func fetchJSONFeed(feedURL string, opts JSONFeedOptions) ([]FeedItem, error) {
 	req.Header.Del("Upgrade-Insecure-Requests")
 	req.Header.Del("Sec-Fetch-User")
 
-	resp, err := httpClient.Do(req)
+	resp, err := doPaced(httpClient, req)
 	if err != nil {
 		return nil, err
 	}

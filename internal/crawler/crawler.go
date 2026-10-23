@@ -111,8 +111,9 @@ type Config struct {
 	RetryBlockedPages  bool
 	BlockedRetryPasses int
 	CaptureFormat      CaptureFormat
-	PathFilter         string // Only crawl URLs starting with this path (e.g., "/newsroom/")
-	IgnoreQueryParams  bool   // Treat URLs with different query params as the same page
+	PathFilter         string  // Only crawl URLs starting with this path (e.g., "/newsroom/")
+	IgnoreQueryParams  bool    // Treat URLs with different query params as the same page
+	RequestsPerSecond  float64 // Shared request ceiling; 0 means DefaultRequestsPerSecond, below 0 means none
 	SitemapOpts        SitemapOptions
 	JSONFeedOpts       JSONFeedOptions
 }
@@ -246,6 +247,12 @@ func Start(cfg Config) {
 	startTime = time.Now()
 	config = cfg
 	successfulHit = false
+
+	rate := cfg.RequestsPerSecond
+	if rate == 0 {
+		rate = DefaultRequestsPerSecond
+	}
+	setRate(rate)
 
 	sema = make(chan struct{}, cfg.MaxConcurrency)
 
@@ -749,7 +756,7 @@ func fetchPage(link string, attempt int) (success bool, blocked bool, err error)
 		req.Header.Set("Referer", config.StartURL)
 	}
 
-	resp, err := httpClient.Do(req)
+	resp, err := doPaced(httpClient, req)
 	if err != nil {
 		handleNetworkError(err)
 		return false, false, err
@@ -837,7 +844,7 @@ func fetchPageForRetry(link string, retryAttempt int) bool {
 	req.Header.Set("Sec-Fetch-Mode", "navigate")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 
-	resp, err := httpClient.Do(req)
+	resp, err := doPaced(httpClient, req)
 	if err != nil {
 		return false
 	}
@@ -1023,7 +1030,7 @@ func requestLink(method, link string) (int, error) {
 	BrowserHeaders(req, userAgents[0])
 	req.Header.Set("Sec-Fetch-Site", "cross-site")
 
-	resp, err := httpClient.Do(req)
+	resp, err := doPaced(httpClient, req)
 	if err != nil {
 		return 0, err
 	}
@@ -1074,7 +1081,7 @@ func checkImage(src, pageURL string) {
 	req.Header.Set("User-Agent", userAgents[0])
 
 	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := doPaced(client, req)
 	if err != nil {
 		return
 	}
@@ -1141,7 +1148,6 @@ func extractInternalLinks(body []byte, pageURL string) {
 						continue
 					}
 
-					time.Sleep(50 * time.Millisecond)
 					crawl(nextURL.String())
 				}
 			}

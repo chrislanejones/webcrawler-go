@@ -203,7 +203,7 @@ func fetchForSitemap(link string, includeInSitemap bool) {
 
 	BrowserHeaders(req, userAgents[0])
 
-	resp, err := httpClient.Do(req)
+	resp, err := doPaced(httpClient, req)
 	if err != nil {
 		atomic.AddInt64(&sitemapStats.ErrorCount, 1)
 		if includeInSitemap {
@@ -356,7 +356,6 @@ func extractLinksForSitemap(body []byte, sourceURL string) {
 
 	// Crawl all extracted links
 	for _, link := range extractedLinks {
-		time.Sleep(30 * time.Millisecond)
 		crawlForSitemap(link)
 	}
 }
@@ -489,7 +488,7 @@ func generateSitemapFile(cfg Config) {
 
 	// Collect all URLs
 	var urls []SitemapURL
-	sitemapURLs.Range(func(key, value interface{}) bool {
+	sitemapURLs.Range(func(key, value any) bool {
 		entry := value.(*SitemapEntry)
 		sitemapURL := SitemapURL{
 			Loc:        entry.URL,
@@ -545,7 +544,7 @@ func printSitemapFinalStats(cfg Config) {
 	elapsed := time.Since(sitemapStart)
 
 	urlCount := 0
-	sitemapURLs.Range(func(key, value interface{}) bool {
+	sitemapURLs.Range(func(key, value any) bool {
 		urlCount++
 		return true
 	})

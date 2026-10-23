@@ -69,6 +69,9 @@ func runSearch(t *testing.T, cfg Config) [][]string {
 		cfg.MaxConcurrency = 2
 	}
 	cfg.RetryDelay = 10 * time.Millisecond
+	if cfg.RequestsPerSecond == 0 {
+		cfg.RequestsPerSecond = -1 // no pacing against a local server
+	}
 	Start(cfg)
 
 	files, _ := filepath.Glob("results-search-*.csv")
