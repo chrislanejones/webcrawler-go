@@ -243,6 +243,7 @@ func init() {
 func Start(cfg Config) {
 	visited = sync.Map{}
 	blockedQueue = sync.Map{}
+	checkedImages = sync.Map{}
 	stats = Stats{}
 	startTime = time.Now()
 	config = cfg
@@ -1047,11 +1048,9 @@ func extractAndCheckImages(body []byte, pageURL string) {
 
 	var f func(*html.Node)
 	f = func(n *html.Node) {
-		if n.Type == html.ElementNode && n.Data == "img" {
-			for _, a := range n.Attr {
-				if a.Key == "src" && a.Val != "" && !strings.HasPrefix(a.Val, "data:") {
-					checkImage(a.Val, pageURL)
-				}
+		if n.Type == html.ElementNode && (n.Data == "img" || n.Data == "source") {
+			for _, src := range imageSources(n) {
+				checkImage(src, pageURL)
 			}
 		}
 		for c := n.FirstChild; c != nil; c = c.NextSibling {
@@ -1060,6 +1059,42 @@ func extractAndCheckImages(body []byte, pageURL string) {
 	}
 	f(doc)
 }
+
+// imageSources returns every image URL an <img> or <picture> <source> can
+// load: src, the lazy-loading data-src, and each candidate in srcset, which
+// is where the large versions usually are.
+func imageSources(n *html.Node) []string {
+	var out []string
+	for _, a := range n.Attr {
+		switch a.Key {
+		case "src", "data-src":
+			out = append(out, a.Val)
+		case "srcset", "data-srcset":
+			for _, cand := range strings.Split(a.Val, ",") {
+				if fields := strings.Fields(cand); len(fields) > 0 {
+					out = append(out, fields[0])
+				}
+			}
+		}
+	}
+	kept := out[:0]
+	for _, s := range out {
+		if s != "" && !strings.HasPrefix(s, "data:") {
+			kept = append(kept, s)
+		}
+	}
+	return kept
+}
+
+// imageInfo is what one fetch of an image found. It is cached per crawl:
+// a site logo appears on every page and only needs measuring once.
+type imageInfo struct {
+	size        int64
+	contentType string
+	ok          bool
+}
+
+var checkedImages sync.Map // resolved URL -> imageInfo
 
 func checkImage(src, pageURL string) {
 	u, err := url.Parse(src)
@@ -1072,38 +1107,73 @@ func checkImage(src, pageURL string) {
 		return
 	}
 	resolved := pageBase.ResolveReference(u).String()
-	atomic.AddInt64(&stats.ImagesChecked, 1)
 
-	req, err := http.NewRequest("GET", resolved, nil)
-	if err != nil {
-		return
-	}
-	req.Header.Set("User-Agent", userAgents[0])
-
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := doPaced(client, req)
-	if err != nil {
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return
+	var info imageInfo
+	if cached, ok := checkedImages.Load(resolved); ok {
+		info = cached.(imageInfo)
+	} else {
+		atomic.AddInt64(&stats.ImagesChecked, 1)
+		info = measureImage(resolved)
+		checkedImages.Store(resolved, info)
 	}
 
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return
-	}
-
-	sizeBytes := int64(len(bodyBytes))
-	sizeKB := sizeBytes / 1024
-
-	if sizeBytes > config.ImageSizeThreshold {
-		contentType := resp.Header.Get("Content-Type")
-		writeOversizedImage(resolved, pageURL, sizeKB, contentType)
+	// Report the image on every page that uses it, so the results say
+	// where to fix it, even though it was only downloaded once.
+	if info.ok && info.size > config.ImageSizeThreshold {
+		sizeKB := info.size / 1024
+		writeOversizedImage(resolved, pageURL, sizeKB, info.contentType)
 		fmt.Printf("\n🖼️  OVERSIZED IMAGE (%dKB): %s\n", sizeKB, resolved)
 	}
+}
+
+// measureImage returns an image's size, from Content-Length on a HEAD when
+// the server sends one, otherwise by counting a streamed GET. The image is
+// never held in memory.
+func measureImage(link string) imageInfo {
+	if info, ok := imageRequest("HEAD", link); ok && info.size > 0 {
+		return info
+	}
+	info, _ := imageRequest("GET", link)
+	return info
+}
+
+func imageRequest(method, link string) (imageInfo, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, method, link, nil)
+	if err != nil {
+		return imageInfo{}, false
+	}
+	BrowserHeaders(req, userAgents[0])
+	req.Header.Set("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8")
+	req.Header.Set("Sec-Fetch-Dest", "image")
+	req.Header.Set("Sec-Fetch-Mode", "no-cors")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	req.Header.Del("Sec-Fetch-User")
+	req.Header.Del("Upgrade-Insecure-Requests")
+
+	resp, err := doPaced(httpClient, req)
+	if err != nil {
+		return imageInfo{}, false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return imageInfo{}, false
+	}
+
+	info := imageInfo{contentType: resp.Header.Get("Content-Type"), ok: true}
+	if method == "HEAD" {
+		info.size = resp.ContentLength
+		return info, true
+	}
+	n, err := io.Copy(io.Discard, resp.Body)
+	if err != nil {
+		return imageInfo{}, false
+	}
+	atomic.AddInt64(&stats.BytesDownloaded, n)
+	info.size = n
+	return info, true
 }
 
 func extractInternalLinks(body []byte, pageURL string) {

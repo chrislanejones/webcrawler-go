@@ -58,13 +58,12 @@ func (s *siteServer) hitCount(path string) int {
 	return s.hits[path]
 }
 
-// runSearch runs a real crawl in a temp directory and returns the rows of the
-// results file, header excluded.
-func runSearch(t *testing.T, cfg Config) [][]string {
+// runCrawl runs a real crawl in a temp directory and returns the rows of the
+// results file matching pattern, header excluded.
+func runCrawl(t *testing.T, cfg Config, pattern string) [][]string {
 	t.Helper()
 	t.Chdir(t.TempDir())
 
-	cfg.Mode = ModeSearchWord
 	if cfg.MaxConcurrency == 0 {
 		cfg.MaxConcurrency = 2
 	}
@@ -74,7 +73,7 @@ func runSearch(t *testing.T, cfg Config) [][]string {
 	}
 	Start(cfg)
 
-	files, _ := filepath.Glob("results-search-*.csv")
+	files, _ := filepath.Glob(pattern)
 	if len(files) != 1 {
 		t.Fatalf("want one results file, found %v", files)
 	}
@@ -88,6 +87,12 @@ func runSearch(t *testing.T, cfg Config) [][]string {
 		t.Fatal(err)
 	}
 	return rows[1:]
+}
+
+func runSearch(t *testing.T, cfg Config) [][]string {
+	t.Helper()
+	cfg.Mode = ModeSearchWord
+	return runCrawl(t, cfg, "results-search-*.csv")
 }
 
 func TestCrawlFetchesEachPageOnce(t *testing.T) {
@@ -203,5 +208,67 @@ func TestUnreadPagesAreReportedNotSearched(t *testing.T) {
 	}
 	if _, ok := got[srv.URL+"/gone"]; ok {
 		t.Error("a 404 has nothing to search and should not be reported")
+	}
+}
+
+func TestOversizedImagesMeasuredOnce(t *testing.T) {
+	var mu sync.Mutex
+	hits := map[string]int{}
+	sizes := map[string]int{"/big.jpg": 600 << 10, "/small.png": 10 << 10, "/huge.jpg": 900 << 10}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits[r.Method+" "+r.URL.Path]++
+		mu.Unlock()
+		switch r.URL.Path {
+		case "/":
+			fmt.Fprint(w, `<html><body><img src="/big.jpg"><img src="/small.png"><a href="/two">two</a></body></html>`)
+		case "/two":
+			fmt.Fprint(w, `<html><body><img src="/big.jpg" srcset="/small.png 1x, /huge.jpg 2x"></body></html>`)
+		default:
+			n, ok := sizes[r.URL.Path]
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "image/jpeg")
+			w.Header().Set("Content-Length", fmt.Sprint(n))
+			if r.Method == http.MethodGet {
+				w.Write(make([]byte, n))
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	rows := runCrawl(t, Config{
+		StartURL:           srv.URL + "/",
+		Mode:               ModeOversizedImages,
+		ImageSizeThreshold: 500 << 10,
+	}, "results-oversized-images-*.csv")
+
+	found := map[string]bool{}
+	for _, r := range rows {
+		found[r[0]+" on "+r[1]] = true
+	}
+	for _, want := range []string{
+		srv.URL + "/big.jpg on " + srv.URL + "/",
+		srv.URL + "/big.jpg on " + srv.URL + "/two",
+		srv.URL + "/huge.jpg on " + srv.URL + "/two", // only in srcset
+	} {
+		if !found[want] {
+			t.Errorf("missing row %q; got %v", want, rows)
+		}
+	}
+	if len(rows) != 3 {
+		t.Errorf("want 3 rows, got %d: %v", len(rows), rows)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if n := hits["HEAD /big.jpg"]; n != 1 {
+		t.Errorf("/big.jpg measured %d times, want once", n)
+	}
+	if n := hits["GET /big.jpg"]; n != 0 {
+		t.Errorf("/big.jpg downloaded %d times although HEAD gave its size", n)
 	}
 }
