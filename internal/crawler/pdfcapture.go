@@ -14,10 +14,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/chromedp/cdproto/emulation"
-	"github.com/chromedp/cdproto/page"
-	"github.com/chromedp/chromedp"
 )
 
 type PDFCaptureStats struct {
@@ -233,139 +229,15 @@ func capturePage(pageURL string) []string {
 
 	waitTurn()
 
-	// A new tab in the run's one browser
-	ctx, cancel := chromedp.NewContext(captureBrowser)
-	defer cancel()
-
-	// Set timeout (180s for slow/heavy pages)
-	ctx, cancel = context.WithTimeout(ctx, 180*time.Second)
-	defer cancel()
-
-	var pdfBuf []byte
-	var pngBuf []byte
-	var linksHTML string
-
-	// Build actions based on capture format
-	actions := []chromedp.Action{
-		// Navigate to page and wait for network to be mostly idle
-		chromedp.Navigate(pageURL),
-		// Wait for DOM to be ready
-		chromedp.WaitReady("body", chromedp.ByQuery),
-		// Initial wait for JS frameworks to initialize
-		chromedp.Sleep(2 * time.Second),
-		// Scroll to trigger lazy loading
-		chromedp.Evaluate(`window.scrollTo(0, document.body.scrollHeight)`, nil),
-		chromedp.Sleep(1 * time.Second),
-		chromedp.Evaluate(`window.scrollTo(0, 0)`, nil),
-		chromedp.Sleep(500 * time.Millisecond),
-		// Wait for content to actually load - check body text length
-		chromedp.ActionFunc(func(ctx context.Context) error {
-			var lastLength int
-			stableCount := 0
-
-			// Wait until body content stabilizes (stops growing)
-			for attempt := 0; attempt < 30; attempt++ {
-				var currentLength int
-				err := chromedp.Evaluate(`document.body.innerText.length`, &currentLength).Do(ctx)
-				if err != nil {
-					time.Sleep(500 * time.Millisecond)
-					continue
-				}
-
-				// Check if content has stabilized
-				if currentLength > 500 && currentLength == lastLength {
-					stableCount++
-					if stableCount >= 3 {
-						// Content stable for 1.5 seconds, good to go
-						return nil
-					}
-				} else {
-					stableCount = 0
-				}
-
-				lastLength = currentLength
-				time.Sleep(500 * time.Millisecond)
-			}
-
-			// Final fallback wait
-			time.Sleep(2 * time.Second)
-			return nil
-		}),
-		// Extra wait for any final rendering
-		chromedp.Sleep(1 * time.Second),
-		// Extract all links from the rendered DOM
-		chromedp.Evaluate(`
-			Array.from(document.querySelectorAll('a[href]'))
-				.map(a => a.href)
-				.filter(href => href && !href.startsWith('javascript:') && !href.startsWith('mailto:') && !href.startsWith('tel:'))
-				.join('\n')
-		`, &linksHTML),
-	}
-
-	// Add screenshot capture if needed
 	needsScreenshot := pdfCaptureFormat == CaptureImagesOnly ||
 		pdfCaptureFormat == CaptureBoth ||
 		pdfCaptureFormat == CaptureCMYKTIFF
-
-	if needsScreenshot {
-		actions = append(actions, chromedp.ActionFunc(func(ctx context.Context) error {
-			// Get page dimensions
-			_, _, contentSize, _, _, _, err := page.GetLayoutMetrics().Do(ctx)
-			if err != nil {
-				return err
-			}
-
-			width, height := int64(contentSize.Width), int64(contentSize.Height)
-
-			// Cap height to avoid memory issues
-			if height > 16384 {
-				height = 16384
-			}
-
-			// Set viewport to full page size
-			err = emulation.SetDeviceMetricsOverride(width, height, 1, false).
-				WithScreenOrientation(&emulation.ScreenOrientation{
-					Type:  emulation.OrientationTypePortraitPrimary,
-					Angle: 0,
-				}).Do(ctx)
-			if err != nil {
-				return err
-			}
-
-			// Capture screenshot
-			pngBuf, err = page.CaptureScreenshot().
-				WithQuality(100).
-				WithFromSurface(true).
-				Do(ctx)
-			return err
-		}))
-	}
-
-	// Add PDF generation if needed
 	needsPDF := pdfCaptureFormat == CapturePDFOnly ||
 		pdfCaptureFormat == CaptureBoth ||
 		pdfCaptureFormat == CaptureCMYKPDF
 
-	if needsPDF {
-		actions = append(actions, chromedp.ActionFunc(func(ctx context.Context) error {
-			var err error
-			pdfBuf, _, err = page.PrintToPDF().
-				WithPrintBackground(true).
-				WithScale(1.0).
-				WithPaperWidth(8.5).
-				WithPaperHeight(11).
-				WithMarginTop(0.4).
-				WithMarginBottom(0.4).
-				WithMarginLeft(0.4).
-				WithMarginRight(0.4).
-				WithDisplayHeaderFooter(false).
-				WithGenerateDocumentOutline(false).
-				Do(ctx)
-			return err
-		}))
-	}
-
-	err := chromedp.Run(ctx, actions...)
+	shot, err := renderPage(pageURL, needsScreenshot, needsPDF, true)
+	pdfBuf, pngBuf, linksHTML := shot.pdf, shot.png, shot.links
 
 	if err != nil {
 		atomic.AddInt64(&pdfStats.Errors, 1)

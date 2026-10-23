@@ -1,7 +1,6 @@
 package crawler
 
 import (
-	"context"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
@@ -14,10 +13,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/chromedp/cdproto/emulation"
-	"github.com/chromedp/cdproto/page"
-	"github.com/chromedp/chromedp"
 )
 
 // FeedItem represents a single item from a JSON feed
@@ -379,109 +374,15 @@ func captureJSONFeedPage(pageURL string, item FeedItem) {
 		}
 	}
 
-	// A new tab in the run's one browser
-	ctx, cancel := chromedp.NewContext(captureBrowser)
-	defer cancel()
-
-	ctx, cancel = context.WithTimeout(ctx, 180*time.Second)
-	defer cancel()
-
-	var pdfBuf []byte
-	var pngBuf []byte
-
-	actions := []chromedp.Action{
-		chromedp.Navigate(pageURL),
-		chromedp.WaitReady("body", chromedp.ByQuery),
-		chromedp.Sleep(2 * time.Second),
-		chromedp.Evaluate(`window.scrollTo(0, document.body.scrollHeight)`, nil),
-		chromedp.Sleep(1 * time.Second),
-		chromedp.Evaluate(`window.scrollTo(0, 0)`, nil),
-		chromedp.Sleep(500 * time.Millisecond),
-		// Wait for content to stabilize
-		chromedp.ActionFunc(func(ctx context.Context) error {
-			var lastLength int
-			stableCount := 0
-			for attempt := 0; attempt < 30; attempt++ {
-				var currentLength int
-				err := chromedp.Evaluate(`document.body.innerText.length`, &currentLength).Do(ctx)
-				if err != nil {
-					time.Sleep(500 * time.Millisecond)
-					continue
-				}
-				if currentLength > 500 && currentLength == lastLength {
-					stableCount++
-					if stableCount >= 3 {
-						return nil
-					}
-				} else {
-					stableCount = 0
-				}
-				lastLength = currentLength
-				time.Sleep(500 * time.Millisecond)
-			}
-			time.Sleep(2 * time.Second)
-			return nil
-		}),
-		chromedp.Sleep(1 * time.Second),
-	}
-
-	// Add screenshot capture if needed
 	needsScreenshot := jsonFeedFormat == CaptureImagesOnly ||
 		jsonFeedFormat == CaptureBoth ||
 		jsonFeedFormat == CaptureCMYKTIFF
-
-	if needsScreenshot {
-		actions = append(actions, chromedp.ActionFunc(func(ctx context.Context) error {
-			_, _, contentSize, _, _, _, err := page.GetLayoutMetrics().Do(ctx)
-			if err != nil {
-				return err
-			}
-
-			width, height := int64(contentSize.Width), int64(contentSize.Height)
-			if height > 16384 {
-				height = 16384
-			}
-
-			err = emulation.SetDeviceMetricsOverride(width, height, 1, false).
-				WithScreenOrientation(&emulation.ScreenOrientation{
-					Type:  emulation.OrientationTypePortraitPrimary,
-					Angle: 0,
-				}).Do(ctx)
-			if err != nil {
-				return err
-			}
-
-			pngBuf, err = page.CaptureScreenshot().
-				WithQuality(100).
-				WithFromSurface(true).
-				Do(ctx)
-			return err
-		}))
-	}
-
-	// Add PDF generation if needed
 	needsPDF := jsonFeedFormat == CapturePDFOnly ||
 		jsonFeedFormat == CaptureBoth ||
 		jsonFeedFormat == CaptureCMYKPDF
 
-	if needsPDF {
-		actions = append(actions, chromedp.ActionFunc(func(ctx context.Context) error {
-			var err error
-			pdfBuf, _, err = page.PrintToPDF().
-				WithPrintBackground(true).
-				WithScale(1.0).
-				WithPaperWidth(8.5).
-				WithPaperHeight(11).
-				WithMarginTop(0.4).
-				WithMarginBottom(0.4).
-				WithMarginLeft(0.4).
-				WithMarginRight(0.4).
-				Do(ctx)
-			return err
-		}))
-	}
-
-	err := chromedp.Run(ctx, actions...)
+	shot, err := renderPage(pageURL, needsScreenshot, needsPDF, false)
+	pdfBuf, pngBuf := shot.pdf, shot.png
 	if err != nil {
 		atomic.AddInt64(&jsonFeedStats.Errors, 1)
 		fmt.Print("\033[2K\r")
