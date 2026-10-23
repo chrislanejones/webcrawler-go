@@ -2,7 +2,6 @@ package crawler
 
 import (
 	"bufio"
-	"context"
 	"fmt"
 	"net/url"
 	"os"
@@ -24,10 +23,6 @@ type PDFCaptureStats struct {
 	Errors          int64
 	SkippedExternal int64
 }
-
-// captureBrowser is the one Chrome a Page Capture or JSON Feed run uses.
-// Each page opens a tab in it.
-var captureBrowser context.Context
 
 var (
 	pdfVisited           sync.Map
@@ -74,13 +69,11 @@ func StartPDFCapture(cfg Config) {
 
 	pdfSema = make(chan struct{}, cfg.MaxConcurrency)
 
-	var stopBrowser func()
-	captureBrowser, stopBrowser, err = newBrowser()
-	if err != nil {
+	if err := startCaptureBrowser(); err != nil {
 		fmt.Printf("❌ %v\n", err)
 		return
 	}
-	defer stopBrowser()
+	defer closeCaptureBrowser()
 
 	// Start live stats
 	stopStats := make(chan bool)

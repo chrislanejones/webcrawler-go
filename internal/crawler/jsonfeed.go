@@ -74,13 +74,11 @@ func StartJSONFeedCapture(cfg Config) {
 
 	jsonFeedSema = make(chan struct{}, cfg.MaxConcurrency)
 
-	var stopBrowser func()
-	captureBrowser, stopBrowser, err = newBrowser()
-	if err != nil {
+	if err := startCaptureBrowser(); err != nil {
 		fmt.Printf("❌ %v\n", err)
 		return
 	}
-	defer stopBrowser()
+	defer closeCaptureBrowser()
 
 	// Start live stats
 	stopStats := make(chan bool)

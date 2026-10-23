@@ -2,7 +2,12 @@ package crawler
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os/exec"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/chromedp/cdproto/cdp"
@@ -49,6 +54,78 @@ func newBrowser() (browser context.Context, stop func(), err error) {
 	return browserCtx, stop, nil
 }
 
+// The one Chrome a Page Capture or JSON Feed run uses. Each page opens a tab
+// in it. browserGen counts restarts, so when several workers see the same
+// dead browser only the first replaces it.
+var (
+	browserMu       sync.Mutex
+	captureBrowser  context.Context
+	stopBrowser     = func() {}
+	browserGen      int
+	browserRestarts atomic.Int64
+)
+
+func startCaptureBrowser() error {
+	browserMu.Lock()
+	defer browserMu.Unlock()
+	b, stop, err := newBrowser()
+	if err != nil {
+		return err
+	}
+	captureBrowser, stopBrowser, browserGen = b, stop, 0
+	browserRestarts.Store(0)
+	return nil
+}
+
+func closeCaptureBrowser() {
+	browserMu.Lock()
+	defer browserMu.Unlock()
+	stopBrowser()
+	stopBrowser = func() {}
+}
+
+func currentBrowser() (context.Context, int) {
+	browserMu.Lock()
+	defer browserMu.Unlock()
+	return captureBrowser, browserGen
+}
+
+// restartBrowser replaces the run's browser if it is still the one that
+// failed. A worker that arrives after another already restarted it just uses
+// the new one.
+func restartBrowser(failedGen int) error {
+	browserMu.Lock()
+	defer browserMu.Unlock()
+	if browserGen != failedGen {
+		return nil
+	}
+	stopBrowser()
+	b, stop, err := newBrowser()
+	if err != nil {
+		stopBrowser = func() {}
+		return err
+	}
+	captureBrowser, stopBrowser = b, stop
+	browserGen++
+	browserRestarts.Add(1)
+	fmt.Print("\033[2K\r")
+	fmt.Println("🔁 Chrome stopped responding; started a new one and retrying the page.")
+	return nil
+}
+
+// browserDied reports whether err came from the browser itself going away,
+// a crash or an out-of-memory kill, rather than from one page.
+func browserDied(browser context.Context, err error) bool {
+	if browser.Err() != nil {
+		return true
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return true
+	}
+	return strings.Contains(err.Error(), "lost the connection to the browser")
+}
+
 // pageRender is what renderPage captured from one page.
 type pageRender struct {
 	pdf   []byte
@@ -63,10 +140,27 @@ type pageRender struct {
 // Settling takes about 6 seconds a page: a pause for JavaScript frameworks to
 // start, a scroll to the bottom and back to trigger lazy loading, then waiting
 // until the body text stops growing.
+//
+// When the browser itself dies partway through, it is restarted and the page
+// is tried once more, so one crash costs at most a retry rather than every
+// page left in the run.
 func renderPage(pageURL string, wantPNG, wantPDF, wantLinks bool) (pageRender, error) {
+	browser, gen := currentBrowser()
+	out, err := renderInBrowser(browser, pageURL, wantPNG, wantPDF, wantLinks)
+	if err == nil || !browserDied(browser, err) {
+		return out, err
+	}
+	if rerr := restartBrowser(gen); rerr != nil {
+		return out, fmt.Errorf("%w (restarting Chrome failed: %v)", err, rerr)
+	}
+	browser, _ = currentBrowser()
+	return renderInBrowser(browser, pageURL, wantPNG, wantPDF, wantLinks)
+}
+
+func renderInBrowser(browser context.Context, pageURL string, wantPNG, wantPDF, wantLinks bool) (pageRender, error) {
 	var out pageRender
 
-	ctx, cancel := chromedp.NewContext(captureBrowser)
+	ctx, cancel := chromedp.NewContext(browser)
 	defer cancel()
 	// 180s for slow, heavy pages
 	ctx, cancel = context.WithTimeout(ctx, 180*time.Second)

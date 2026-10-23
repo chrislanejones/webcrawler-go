@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/chromedp/chromedp"
 )
 
 // needChrome skips a test when no Chrome is installed. GitHub's Ubuntu
@@ -128,5 +130,48 @@ func TestFeedCaptureHonorsPageLimit(t *testing.T) {
 	}
 	if !strings.Contains(StopReason(), "page limit") {
 		t.Errorf("StopReason = %q", StopReason())
+	}
+}
+
+func TestCaptureSurvivesAChromeCrash(t *testing.T) {
+	needChrome(t)
+	srv := articleServer(t, 4)
+	t.Chdir(t.TempDir())
+
+	// Kill the browser process as soon as the first PDF is on disk, the
+	// way a crash or an out-of-memory kill would.
+	killed := make(chan bool, 1)
+	go func() {
+		deadline := time.Now().Add(60 * time.Second)
+		for time.Now().Before(deadline) {
+			if countFiles(t, "page_captures_*/*.pdf") > 0 {
+				browser, _ := currentBrowser()
+				if c := chromedp.FromContext(browser); c != nil && c.Browser != nil && c.Browser.Process() != nil {
+					killed <- c.Browser.Process().Kill() == nil
+					return
+				}
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		killed <- false
+	}()
+
+	Start(Config{
+		StartURL:          srv.URL + "/",
+		Mode:              ModePDFCapture,
+		CaptureFormat:     CapturePDFOnly,
+		MaxConcurrency:    2,
+		RequestsPerSecond: -1,
+		IgnoreQueryParams: true,
+	})
+
+	if !<-killed {
+		t.Fatal("the test never managed to kill Chrome")
+	}
+	if n := countFiles(t, "page_captures_*/*.pdf"); n != 5 {
+		t.Errorf("want 5 PDFs after a crash, got %d", n)
+	}
+	if browserRestarts.Load() < 1 {
+		t.Error("Chrome was killed but never restarted")
 	}
 }
