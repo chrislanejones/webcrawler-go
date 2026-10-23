@@ -67,16 +67,33 @@ func TestDocxTextRejectsNonZip(t *testing.T) {
 // buildPDF writes a one-page PDF with a line of text and a link annotation,
 // computing the cross-reference offsets so the file is valid.
 func buildPDF() []byte {
+	return buildPDFPages(false)
+}
+
+// buildPDFPages writes the one-page PDF, optionally followed by a second page
+// whose content stream claims FlateDecode but holds junk, the "zlib: invalid
+// header" seen on real 2004-era budget PDFs.
+func buildPDFPages(withDamagedPage bool) []byte {
 	content := "BT /F1 12 Tf 72 720 Td (Notice of public meeting) Tj ET"
+	kids, count := "[3 0 R]", 1
+	if withDamagedPage {
+		kids, count = "[3 0 R 7 0 R]", 2
+	}
 	objects := []string{
 		"<< /Type /Catalog /Pages 2 0 R >>",
-		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		fmt.Sprintf("<< /Type /Pages /Kids %s /Count %d >>", kids, count),
 		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R /Annots [6 0 R] >>",
 		fmt.Sprintf("<< /Length %d >>\nstream\n%s\nendstream", len(content), content),
 		// Real PDFs carry glyph widths. Without them every glyph lands on
 		// the same X and word gaps cannot be inferred.
 		"<< /Type /Font /Subtype /Type1 /BaseFont /Courier /FirstChar 32 /LastChar 126 /Widths [" + strings.Repeat("600 ", 95) + "] >>",
 		"<< /Type /Annot /Subtype /Link /Rect [72 700 300 730] /A << /S /URI /URI (https://www.governor.virginia.gov/newsroom/) >> >>",
+	}
+	if withDamagedPage {
+		objects = append(objects,
+			"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 8 0 R >>",
+			"<< /Length 12 /Filter /FlateDecode >>\nstream\nnot deflated\nendstream",
+		)
 	}
 
 	var buf bytes.Buffer
@@ -120,5 +137,15 @@ func TestPDFTextSurvivesGarbage(t *testing.T) {
 		if _, err := PDFText(in); err == nil {
 			t.Errorf("input %d: expected an error, got none", i)
 		}
+	}
+}
+
+func TestPDFTextSkipsADamagedPage(t *testing.T) {
+	text, err := PDFText(buildPDFPages(true))
+	if err != nil {
+		t.Fatalf("one damaged page should not fail the document: %v", err)
+	}
+	if !strings.Contains(text, "Notice of public meeting") {
+		t.Errorf("the readable page was lost: %q", text)
 	}
 }

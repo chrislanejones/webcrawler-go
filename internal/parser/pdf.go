@@ -36,21 +36,50 @@ func PDFText(data []byte) (text string, err error) {
 
 	var out strings.Builder
 	pages := min(r.NumPage(), maxPDFPages)
+	var firstErr error
+	read := 0
 	for i := 1; i <= pages; i++ {
-		page := r.Page(i)
-		if page.V.IsNull() {
+		pageText, err := readPage(r, i)
+		if err != nil {
+			// One damaged page, a corrupt stream or an unsupported filter,
+			// should not hide the rest of the document from the search.
+			if firstErr == nil {
+				firstErr = fmt.Errorf("page %d: %w", i, err)
+			}
 			continue
 		}
-		// No shared font cache: font names like /F1 are scoped to each
-		// page's resources and can mean a different font on the next page.
-		pageText, err := page.GetPlainText(nil)
-		if err != nil {
-			return "", fmt.Errorf("page %d: %w", i, err)
-		}
+		read++
 		out.WriteString(pageText)
-		out.WriteByte('\n')
-		writeLinkURIs(&out, page.V.Key("Annots"))
 	}
+	if read == 0 && firstErr != nil {
+		return "", firstErr
+	}
+	return out.String(), nil
+}
+
+// readPage returns one page's text and link URIs. It recovers from the
+// library's panics itself, so a panic on one page costs only that page.
+func readPage(r *pdf.Reader, i int) (text string, err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			err = fmt.Errorf("malformed page: %v", rec)
+		}
+	}()
+
+	page := r.Page(i)
+	if page.V.IsNull() {
+		return "", nil
+	}
+	// No shared font cache: font names like /F1 are scoped to each
+	// page's resources and can mean a different font on the next page.
+	pageText, err := page.GetPlainText(nil)
+	if err != nil {
+		return "", err
+	}
+	var out strings.Builder
+	out.WriteString(pageText)
+	out.WriteByte('\n')
+	writeLinkURIs(&out, page.V.Key("Annots"))
 	return out.String(), nil
 }
 
