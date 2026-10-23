@@ -16,6 +16,9 @@ new pages being queued, let requests in flight finish, and still write the
 results and statistics with a STOPPED EARLY line. A second Ctrl-C exits at
 once.
 
+Update (`46a3e40`): graceful stop, `-max-time` and `-max-pages` now cover
+every mode, including Page Capture, Sitemap and JSON Feed Capture.
+
 ## Consequences
 + Crawls can be scripted and scheduled. Live on oaa.virginia.gov, Ctrl-C
   after 8 seconds stopped cleanly at 16s with 45 pages, 26 PDFs parsed and
@@ -23,7 +26,6 @@ once.
 + Interrupted runs keep their results.
 - Two front ends to keep in step: every new setting needs a wizard prompt
   and a flag with the same default.
-- Graceful stop covers link, word, broken-link and image modes only.
 
 ## Alternatives rejected
 - Flags only, dropping the wizard: the wizard stays the default for people

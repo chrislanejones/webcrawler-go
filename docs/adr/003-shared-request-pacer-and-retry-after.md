@@ -16,6 +16,9 @@ workers, spaces requests at `Config.RequestsPerSecond`, default 5 (`-rate`;
 HTTP date, pauses the whole crawl, capped at 2 minutes, and a pause can only
 be extended, never shortened. The per-link sleeps are removed.
 
+Update (`46a3e40`): headless-browser loads in Page Capture and JSON Feed
+Capture now go through the pacer too.
+
 ## Consequences
 + Concurrency and politeness are separate: raising concurrency overlaps slow
   pages without hitting the site harder.
@@ -23,8 +26,6 @@ be extended, never shortened. The per-link sleeps are removed.
 - One budget for all hosts: in Broken Links mode, checks against external
   sites spend the same 5/s as the site being crawled.
 - Package-level pacer state, so one crawl per process.
-- Headless-browser loads (chromedp capture and feed paths) do not go
-  through the pacer.
 
 ## Alternatives rejected
 - Keep the per-link sleep: held concurrency slots and did not bound the rate.

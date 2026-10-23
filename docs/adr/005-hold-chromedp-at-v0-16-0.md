@@ -1,5 +1,5 @@
 # ADR-005: Hold chromedp at v0.16.0 and defer the v0.17+ migration
-Date: 2026-10-23   Status: draft
+Date: 2026-10-23   Status: superseded by 006
 
 ## Context
 The 10-23-2026 dependency pass (`bfd169d`) moved Go to 1.26.10 and x/net to

@@ -276,7 +276,7 @@ xargs -P 8 -I{} webcrawler -url {} -mode word -terms '<?php' -max-time 25m -out 
 
 Press **Ctrl-C**, or set `-max-time` or `-max-pages`, and the crawl stops taking on new pages, lets the requests already out finish, and still writes the results file and the final statistics, with a line saying why it stopped. Press Ctrl-C a second time to quit at once.
 
-This covers Find Link, Find Word, Broken Links and Oversized Images. Page Capture keeps its own `c` + Enter.
+This works in every mode. In Page Capture and JSON Feed Capture, `c` + Enter does the same thing as Ctrl-C, and the pages Chrome is already rendering are finished and saved.
 
 ### Path Filtering Example
 
@@ -685,6 +685,7 @@ webcrawler/
 ├── go.sum                       # Dependency checksums
 └── internal/
     ├── crawler/
+    │   ├── chrome.go            # One shared browser, page rendering
     │   ├── crawler.go           # Core crawling logic & statistics
     │   ├── pace.go              # Shared rate limit and Retry-After
     │   ├── jsonfeed.go          # JSON feed reader & capture
@@ -802,7 +803,8 @@ Tests run real crawls against local servers that imitate the awkward cases:
 a CDN that rejects `HEAD`, one that answers `HEAD` with 404 but `GET` with
 200, firewall 403s, rate limits, skip links and fragments, a start page that
 redirects to another host, the path filter, page and time limits, and
-self-signed certificates. The parsers are tested on Word files with sentences
+self-signed certificates. Page Capture and JSON Feed Capture are tested against
+a real Chrome when one is installed (`go test -short ./...` skips them). The parsers are tested on Word files with sentences
 split across runs, and on PDFs with link annotations and malformed input.
 CI runs gofmt, vet, build, tests and `govulncheck` on every push.
 
@@ -831,7 +833,7 @@ GOOS=darwin GOARCH=amd64 go build -o webcrawler-mac .
 | Package                                                              | Version  | Used for                            |
 | -------------------------------------------------------------------- | -------- | ----------------------------------- |
 | [golang.org/x/net](https://pkg.go.dev/golang.org/x/net)              | v0.61.0  | HTML parsing                        |
-| [chromedp](https://github.com/chromedp/chromedp)                     | v0.16.0  | Chrome DevTools Protocol, capture   |
+| [chromedp](https://github.com/chromedp/chromedp)                     | v0.20.1  | Chrome DevTools Protocol, capture   |
 | [huh](https://github.com/charmbracelet/huh)                          | v1.0.0   | Terminal wizard forms               |
 | [ledongthuc/pdf](https://github.com/ledongthuc/pdf)                  | 6c8c28e0 | PDF text and link extraction        |
 

@@ -207,17 +207,28 @@ the newer one reads 17. Most are "no copy/print" PDFs encrypted with an
 empty password. Move the pin on or after 11-03-2026 and rerun
 `TestPDFText*`.
 
-## 19. chromedp is stuck at v0.16.0 — MEDIUM
+## 19. chromedp is stuck at v0.16.0 — FIXED (2376a3b)
 
-Every release from v0.17.0 rewrites the API around generics. Page Capture
-(`pdfcapture.go`) and JSON Feed Capture (`jsonfeed.go`) need porting, about
-1,400 lines. No reachable vulnerability today. See docs/adr/005.
+Now on chromedp v0.20.1. The two capture modes first moved onto one shared
+`renderPage` (ee4e262), so the port was two functions in `chrome.go`
+instead of 1,400 lines. It also fixed a screenshot stall in the shared
+browser from 40e8db5 (267s → 18s for 6 pages). See docs/adr/006.
 
-## 20. Limits and pacing do not cover the browser modes — LOW
+## 20. Limits and pacing do not cover the browser modes — FIXED (46a3e40, 8d23460)
 
-`-max-pages`, `-max-time`, Ctrl-C and the shared pacer apply to Find Link,
-Find Word, Broken Links and Oversized Images. Page Capture, Sitemap and JSON
-Feed run their own loops; Page Capture still has its own `c` + Enter.
+One stop path for every mode: `c` + Enter, Ctrl-C and `-max-time` cancel
+the run's context, and `-max-pages` stops new work being queued. In JSON
+Feed Capture `c` + Enter had never worked. Chrome runs in its own process
+group on Unix, so the first Ctrl-C lets captures in flight finish (before:
+1 of 6, after: 6 of 6).
+
+## 23. One Chrome crash fails the rest of a capture run — FIXED (5c472b3)
+
+Since a run shares one browser (40e8db5), a Chrome crash or an out-of-memory
+kill made every capture after it fail. `renderPage` now restarts Chrome when
+the browser itself dies and retries the page once. Still open: a browser
+that hangs without dying is not restarted, so each page after it waits out
+the 180-second timeout. See docs/adr/006.
 
 ## 21. Go 1.27 — LOW, a decision
 
@@ -238,4 +249,8 @@ page and time limits, redirects to another host. `pace_test.go` covers the
 pacer and Retry-After, `internal/parser/parser_test.go` the PDF and DOCX
 parsers, and `cli_test.go` the flags.
 
-Run them with `go test -race ./...`. The suite takes about 3 seconds.
+`chrome_test.go` drives a real Chrome for Page Capture and JSON Feed Capture.
+It skips when no Chrome is installed, or with `-short`.
+
+Run them with `go test -race ./...`: about 25 seconds with Chrome, 3 without.
+`go test -short ./...` skips the browser tests.
