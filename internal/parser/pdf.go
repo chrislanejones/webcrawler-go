@@ -1,53 +1,65 @@
 package parser
 
 import (
-	"io"
-	"os"
-	"os/exec"
-	"path/filepath"
+	"bytes"
+	"fmt"
 	"strings"
+
+	"github.com/ledongthuc/pdf"
 )
 
-func ContainsLinkInPDF(r io.Reader, target string) bool {
-	buf, err := io.ReadAll(r)
+// maxPDFPages bounds the work spent on one document. Past this a PDF is a
+// scanned archive or a data dump, and the crawl has better places to spend
+// its time.
+const maxPDFPages = 1000
+
+// PDFText returns the searchable content of a PDF: the text drawn on each
+// page, plus the URI of every link annotation. Link URLs live in annotations
+// rather than in the page text, so a text-only search never finds them.
+//
+// It runs in-process. The previous version shelled out to the pdfcpu CLI
+// through one fixed temp file, which failed silently when pdfcpu was not
+// installed and let concurrent workers overwrite each other's file.
+func PDFText(data []byte) (text string, err error) {
+	// The PDF library panics on malformed input. One bad document on a
+	// site must not take down the crawl.
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("malformed pdf: %v", r)
+		}
+	}()
+
+	r, err := pdf.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
-		return false
+		return "", err
 	}
 
-	os.MkdirAll("assets/tmp", 0755)
-	tmpPDF := "assets/tmp/tmp.pdf"
-	if err := os.WriteFile(tmpPDF, buf, 0644); err != nil {
-		return false
-	}
-
-	outDir := "assets/tmp/text"
-	os.MkdirAll(outDir, 0755)
-
-	cmd := exec.Command("pdfcpu", "extract", "-mode", "text", tmpPDF, outDir)
-	if err := cmd.Run(); err != nil {
-		// Cleanup and return false
-		os.RemoveAll(outDir)
-		os.Remove(tmpPDF)
-		return false
-	}
-
-	found := false
-	filepath.Walk(outDir, func(path string, info os.FileInfo, err error) error {
+	var out strings.Builder
+	pages := min(r.NumPage(), maxPDFPages)
+	for i := 1; i <= pages; i++ {
+		page := r.Page(i)
+		if page.V.IsNull() {
+			continue
+		}
+		// No shared font cache: font names like /F1 are scoped to each
+		// page's resources and can mean a different font on the next page.
+		pageText, err := page.GetPlainText(nil)
 		if err != nil {
-			return nil
+			return "", fmt.Errorf("page %d: %w", i, err)
 		}
-		if strings.HasSuffix(path, ".txt") {
-			data, readErr := os.ReadFile(path)
-			if readErr == nil && strings.Contains(string(data), target) {
-				found = true
-			}
+		out.WriteString(pageText)
+		out.WriteByte('\n')
+		writeLinkURIs(&out, page.V.Key("Annots"))
+	}
+	return out.String(), nil
+}
+
+func writeLinkURIs(out *strings.Builder, annots pdf.Value) {
+	for i := 0; i < annots.Len(); i++ {
+		uri := annots.Index(i).Key("A").Key("URI")
+		if s := uri.RawString(); s != "" {
+			out.WriteString(s)
+			out.WriteByte('\n')
 		}
-		return nil
-	})
-
-	// Cleanup
-	os.RemoveAll(outDir)
-	os.Remove(tmpPDF)
-
-	return found
+	}
 }

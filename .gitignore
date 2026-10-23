@@ -33,8 +33,6 @@ vendor/
 Thumbs.db
 
 # Project specific
-assets/tmp/*
-!assets/tmp/.gitkeep
 results-*.csv
 
 # Logs

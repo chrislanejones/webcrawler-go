@@ -142,6 +142,7 @@ type Stats struct {
 	ConnectionRefused int64
 	BlockedRetried    int64
 	BlockedRecovered  int64
+	ParseErrors       int64
 }
 
 type BlockedPage struct {
@@ -430,6 +431,7 @@ func printFinalStats() {
 	fmt.Printf("║  📝 HTML Pages:            %-40d ║\n", stats.HTMLScanned)
 	fmt.Printf("║  📕 PDF Documents:         %-40d ║\n", stats.PDFsScanned)
 	fmt.Printf("║  📘 Word Documents:        %-40d ║\n", stats.DOCXScanned)
+	fmt.Printf("║  🚫 Unreadable Documents:  %-40d ║\n", stats.ParseErrors)
 	fmt.Printf("║  🖼️  Images Checked:        %-40d ║\n", stats.ImagesChecked)
 	fmt.Printf("║  🔗 Links Checked:         %-40d ║\n", stats.LinksChecked)
 	fmt.Printf("║  ⏭️  Skipped (External):    %-40d ║\n", stats.SkippedExternal)
@@ -569,6 +571,20 @@ func writeSearchResult(pageURL, contentType, foundIn string) {
 	w := csv.NewWriter(f)
 	defer w.Flush()
 	w.Write([]string{pageURL, contentType, foundIn, config.SearchTarget, time.Now().Format(time.RFC3339)})
+}
+
+// writeNotSearched records a page the search could not read, so a results
+// file with no row for a URL means "searched, no match" and nothing else.
+func writeNotSearched(pageURL, contentType, reason string) {
+	csvMu.Lock()
+	defer csvMu.Unlock()
+
+	f, _ := os.OpenFile(resultFile, os.O_APPEND|os.O_WRONLY, 0644)
+	defer f.Close()
+
+	w := csv.NewWriter(f)
+	defer w.Flush()
+	w.Write([]string{pageURL, contentType, "NOT SEARCHED: " + reason, config.SearchTarget, time.Now().Format(time.RFC3339)})
 }
 
 func writeBrokenLink(brokenURL, foundOnPage string, statusCode int, errMsg string) {
@@ -839,26 +855,36 @@ func fetchPageForRetry(link string, retryAttempt int) bool {
 }
 
 func processSearchMode(link, contentType string, bodyBytes []byte) {
-	target := config.SearchTarget
+	var kind, text string
+	var err error
 
 	switch {
 	case strings.Contains(contentType, "application/pdf"):
 		atomic.AddInt64(&stats.PDFsScanned, 1)
-		if parser.ContainsLinkInPDF(bytes.NewReader(bodyBytes), target) {
-			fmt.Printf("\n✅ MATCH FOUND IN PDF: %s\n", link)
-			writeSearchResult(link, contentType, "PDF")
-		}
+		kind = "PDF"
+		text, err = parser.PDFText(bodyBytes)
 	case strings.Contains(contentType, "application/vnd.openxmlformats-officedocument.wordprocessingml.document"):
 		atomic.AddInt64(&stats.DOCXScanned, 1)
-		if parser.ContainsLinkInDocx(bytes.NewReader(bodyBytes), target) {
-			fmt.Printf("\n✅ MATCH FOUND IN DOCX: %s\n", link)
-			writeSearchResult(link, contentType, "DOCX")
-		}
+		kind = "DOCX"
+		text, err = parser.DocxText(bodyBytes)
 	case strings.Contains(contentType, "text/html"):
-		if bytes.Contains(bodyBytes, []byte(target)) {
-			fmt.Printf("\n✅ MATCH FOUND IN HTML: %s\n", link)
-			writeSearchResult(link, contentType, "HTML")
-		}
+		kind = "HTML"
+		text = string(bodyBytes)
+	default:
+		return
+	}
+
+	// A document that cannot be read was not searched. Say so, rather than
+	// letting it pass as "no match".
+	if err != nil {
+		atomic.AddInt64(&stats.ParseErrors, 1)
+		writeNotSearched(link, contentType, kind+" unreadable: "+err.Error())
+		return
+	}
+
+	if strings.Contains(text, config.SearchTarget) {
+		fmt.Printf("\n✅ MATCH FOUND IN %s: %s\n", kind, link)
+		writeSearchResult(link, contentType, kind)
 	}
 }
 
