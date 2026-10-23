@@ -303,6 +303,14 @@ func BrowserHeaders(req *http.Request, ua string) {
 	req.Header.Set("Sec-Fetch-User", "?1")
 }
 
+// sameOriginNavigation marks a request as a click from a page on the same
+// site. A Referer from the site alongside Sec-Fetch-Site: none, which the
+// page fetcher used to send, is a combination no browser produces.
+func sameOriginNavigation(req *http.Request) {
+	req.Header.Set("Referer", config.StartURL)
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+}
+
 func init() {
 	stopReason.Store("")
 	jar, _ := cookiejar.New(nil)
@@ -926,26 +934,13 @@ func fetchPage(link string, attempt int) (success bool, blocked bool, err error)
 		return false, false, err
 	}
 
-	ua := userAgents[attempt%len(userAgents)]
-	req.Header.Set("User-Agent", ua)
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.5")
-	// Note: Don't set Accept-Encoding manually - let Go's http client handle it
-	// It will automatically add gzip and decompress responses
-	req.Header.Set("DNT", "1")
-	req.Header.Set("Connection", "keep-alive")
-	req.Header.Set("Upgrade-Insecure-Requests", "1")
-	req.Header.Set("Cache-Control", "max-age=0")
-	req.Header.Set("Sec-Fetch-Dest", "document")
-	req.Header.Set("Sec-Fetch-Mode", "navigate")
-	req.Header.Set("Sec-Fetch-Site", "none")
-	req.Header.Set("Sec-Fetch-User", "?1")
+	BrowserHeaders(req, UserAgentFor(attempt))
 
 	successMu.Lock()
 	hadSuccess := successfulHit
 	successMu.Unlock()
 	if hadSuccess {
-		req.Header.Set("Referer", config.StartURL)
+		sameOriginNavigation(req)
 	}
 
 	resp, err := doPaced(httpClient, req)
@@ -1025,17 +1020,8 @@ func fetchPageForRetry(link string, retryAttempt int) bool {
 		return false
 	}
 
-	ua := userAgents[(retryAttempt+2)%len(userAgents)]
-	req.Header.Set("User-Agent", ua)
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.5")
-	req.Header.Set("DNT", "1")
-	req.Header.Set("Connection", "keep-alive")
-	req.Header.Set("Upgrade-Insecure-Requests", "1")
-	req.Header.Set("Referer", config.StartURL)
-	req.Header.Set("Sec-Fetch-Dest", "document")
-	req.Header.Set("Sec-Fetch-Mode", "navigate")
-	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	BrowserHeaders(req, UserAgentFor(retryAttempt+2))
+	sameOriginNavigation(req)
 
 	resp, err := doPaced(httpClient, req)
 	if err != nil {
