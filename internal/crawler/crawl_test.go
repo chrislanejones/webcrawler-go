@@ -1,6 +1,7 @@
 package crawler
 
 import (
+	"context"
 	"encoding/csv"
 	"fmt"
 	"net/http"
@@ -317,5 +318,47 @@ func TestSplitTerms(t *testing.T) {
 	want := []string{"<?php", "<?=", "Richmond, VA"}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Errorf("SplitTerms = %q, want %q", got, want)
+	}
+}
+
+func TestPageLimitStopsTheCrawl(t *testing.T) {
+	s := newSiteServer(t)
+	runSearch(t, Config{StartURL: s.URL + "/", SearchTarget: "<?php", MaxPages: 2})
+
+	total := 0
+	for _, p := range []string{"/", "/a", "/news/", "/news/one"} {
+		total += s.hitCount(p)
+	}
+	if total != 2 {
+		t.Errorf("fetched %d pages with a limit of 2", total)
+	}
+	if !strings.Contains(StopReason(), "page limit") {
+		t.Errorf("StopReason = %q, want it to mention the page limit", StopReason())
+	}
+}
+
+func TestCancelledCrawlStillWritesResults(t *testing.T) {
+	s := newSiteServer(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	t.Chdir(t.TempDir())
+	StartContext(ctx, Config{StartURL: s.URL + "/", Mode: ModeSearchWord, SearchTarget: "<?php", MaxConcurrency: 1, RequestsPerSecond: -1})
+
+	if files, _ := filepath.Glob("results-search-*.csv"); len(files) != 1 {
+		t.Errorf("want the results file even after a stop, found %v", files)
+	}
+	if StopReason() != "stopped by the user" {
+		t.Errorf("StopReason = %q", StopReason())
+	}
+}
+
+func TestOutputDir(t *testing.T) {
+	s := newSiteServer(t)
+	t.Chdir(t.TempDir())
+	Start(Config{StartURL: s.URL + "/", Mode: ModeSearchWord, SearchTarget: "<?php", MaxConcurrency: 1, RequestsPerSecond: -1, OutputDir: "out/oaa"})
+
+	if files, _ := filepath.Glob("out/oaa/results-search-*.csv"); len(files) != 1 {
+		t.Errorf("want the results file in out/oaa, found %v", files)
 	}
 }

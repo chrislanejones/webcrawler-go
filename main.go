@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -13,7 +14,9 @@ import (
 	"github.com/charmbracelet/huh"
 )
 
-func main() {
+// runWizard asks for every setting interactively, then runs the crawl. It is
+// what the program does when started with no arguments.
+func runWizard(ctx context.Context) {
 	fmt.Println()
 	fmt.Println("╔═══════════════════════════════════════════════════════════════════╗")
 	fmt.Println("║                   🕷️  Web Crawler Wizard  🕷️                      ║")
@@ -455,6 +458,7 @@ func main() {
 	// Step 4: Get concurrency and retry settings
 	var concurrencyStr string
 	var retriesStr string
+	var rateStr string
 	var ignoreQueryParams bool
 
 	settingsForm := huh.NewForm(
@@ -469,6 +473,11 @@ func main() {
 				Description("Default: 3").
 				Placeholder("3").
 				Value(&retriesStr),
+			huh.NewInput().
+				Title("Requests per second").
+				Description(fmt.Sprintf("Shared by all workers. Default: %d", crawler.DefaultRequestsPerSecond)).
+				Placeholder(strconv.Itoa(crawler.DefaultRequestsPerSecond)).
+				Value(&rateStr),
 			huh.NewConfirm().
 				Title("Ignore query parameters?").
 				Description("Treat page.html?a=1 and page.html?b=2 as the same page").
@@ -497,6 +506,11 @@ func main() {
 		maxRetries = r
 	}
 
+	var rate float64
+	if r, err := strconv.ParseFloat(strings.TrimSpace(rateStr), 64); err == nil && r > 0 {
+		rate = r
+	}
+
 	fmt.Println()
 	fmt.Println("════════════════════════════════════════════════════════════════════")
 	fmt.Println()
@@ -517,6 +531,7 @@ func main() {
 		CaptureFormat:      captureFormat,
 		PathFilter:         pathFilter,
 		IgnoreQueryParams:  ignoreQueryParams,
+		RequestsPerSecond:  rate,
 		SitemapOpts:        sitemapOptions,
 		JSONFeedOpts:       jsonFeedOptions,
 	}
@@ -535,6 +550,11 @@ func main() {
 	}
 	fmt.Printf("│  ⚡ Concurrency:  %-35d │\n", concurrency)
 	fmt.Printf("│  🔄 Max retries:  %-35d │\n", maxRetries)
+	shownRate := rate
+	if shownRate == 0 {
+		shownRate = crawler.DefaultRequestsPerSecond
+	}
+	fmt.Printf("│  🐢 Rate limit:   %-35s │\n", fmt.Sprintf("%g requests/second", shownRate))
 	if len(altEntryPoints) > 0 {
 		fmt.Printf("│  🚪 Alt entries:  %-35d │\n", len(altEntryPoints))
 	}
@@ -547,7 +567,7 @@ func main() {
 	fmt.Println("🚀 LAUNCHING CRAWLER...")
 	fmt.Println()
 
-	crawler.Start(config)
+	crawler.StartContext(ctx, config)
 
 	fmt.Println()
 	fmt.Println("════════════════════════════════════════════════════════════════════")

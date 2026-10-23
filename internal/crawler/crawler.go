@@ -11,6 +11,7 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -113,9 +114,12 @@ type Config struct {
 	RetryBlockedPages  bool
 	BlockedRetryPasses int
 	CaptureFormat      CaptureFormat
-	PathFilter         string  // Only crawl URLs starting with this path (e.g., "/newsroom/")
-	IgnoreQueryParams  bool    // Treat URLs with different query params as the same page
-	RequestsPerSecond  float64 // Shared request ceiling; 0 means DefaultRequestsPerSecond, below 0 means none
+	PathFilter         string        // Only crawl URLs starting with this path (e.g., "/newsroom/")
+	IgnoreQueryParams  bool          // Treat URLs with different query params as the same page
+	RequestsPerSecond  float64       // Shared request ceiling; 0 means DefaultRequestsPerSecond, below 0 means none
+	MaxPages           int           // Stop queuing pages after this many; 0 means no limit
+	MaxDuration        time.Duration // Stop queuing pages after this long; 0 means no limit
+	OutputDir          string        // Where the results CSV goes; empty means the working directory
 	SitemapOpts        SitemapOptions
 	JSONFeedOpts       JSONFeedOptions
 }
@@ -155,6 +159,8 @@ type BlockedPage struct {
 }
 
 var (
+	runCtx        = context.Background()
+	stopReason    atomic.Value // string
 	visited       sync.Map
 	blockedQueue  sync.Map
 	wg            sync.WaitGroup
@@ -222,6 +228,7 @@ func BrowserHeaders(req *http.Request, ua string) {
 }
 
 func init() {
+	stopReason.Store("")
 	jar, _ := cookiejar.New(nil)
 
 	httpClient = &http.Client{
@@ -242,7 +249,27 @@ func init() {
 	}
 }
 
+// Start runs a crawl to completion.
 func Start(cfg Config) {
+	StartContext(context.Background(), cfg)
+}
+
+// StartContext runs a crawl that stops early when ctx is done, or when the
+// page or time limit in cfg is reached. Stopping is graceful: no new pages
+// are queued, requests already out are allowed to finish, and the results
+// file and final statistics are still written.
+//
+// The limits and early stop apply to Find Link, Find Word, Broken Links and
+// Oversized Images. Page Capture, Sitemap and JSON Feed run their own loops.
+func StartContext(ctx context.Context, cfg Config) {
+	if cfg.MaxDuration > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, cfg.MaxDuration)
+		defer cancel()
+	}
+	runCtx = ctx
+	stopReason.Store("")
+
 	visited = sync.Map{}
 	blockedQueue = sync.Map{}
 	checkedImages = sync.Map{}
@@ -267,13 +294,19 @@ func Start(cfg Config) {
 	}
 
 	timestamp := time.Now().Format("2006-01-02_15-04-05")
+	if cfg.OutputDir != "" {
+		if err := os.MkdirAll(cfg.OutputDir, 0o755); err != nil {
+			fmt.Printf("❌ Cannot create output folder: %v\n", err)
+			return
+		}
+	}
 	switch cfg.Mode {
 	case ModeSearchLink, ModeSearchWord:
-		resultFile = fmt.Sprintf("results-search-%s.csv", timestamp)
+		resultFile = filepath.Join(cfg.OutputDir, fmt.Sprintf("results-search-%s.csv", timestamp))
 	case ModeBrokenLinks:
-		resultFile = fmt.Sprintf("results-broken-links-%s.csv", timestamp)
+		resultFile = filepath.Join(cfg.OutputDir, fmt.Sprintf("results-broken-links-%s.csv", timestamp))
 	case ModeOversizedImages:
-		resultFile = fmt.Sprintf("results-oversized-images-%s.csv", timestamp)
+		resultFile = filepath.Join(cfg.OutputDir, fmt.Sprintf("results-oversized-images-%s.csv", timestamp))
 	case ModePDFCapture:
 		// PDF capture uses its own output handling
 		StartPDFCapture(cfg)
@@ -317,7 +350,7 @@ func Start(cfg Config) {
 	if cfg.RetryBlockedPages {
 		for pass := 1; pass <= cfg.BlockedRetryPasses; pass++ {
 			blockedCount := countBlockedQueue()
-			if blockedCount == 0 {
+			if blockedCount == 0 || stopping() {
 				break
 			}
 
@@ -523,6 +556,9 @@ func printFinalStats() {
 	fmt.Println("║                                                                   ║")
 	fmt.Println("╚═══════════════════════════════════════════════════════════════════╝")
 
+	if reason := StopReason(); reason != "" {
+		fmt.Printf("\n⏹️  STOPPED EARLY: %s. Pages already found are in the results file.\n", reason)
+	}
 	if blockedRemaining > 0 {
 		fmt.Printf("\n⚠️  WARNING: %d pages still blocked after all retry attempts\n", blockedRemaining)
 		fmt.Println("   💡 Tips:")
@@ -664,12 +700,21 @@ func writeOversizedImage(imageURL, foundOnPage string, sizeKB int64, contentType
 }
 
 func crawl(link string) {
+	if stopping() {
+		return
+	}
+
 	visitedKey := getVisitedKey(link)
 	if _, loaded := visited.LoadOrStore(visitedKey, true); loaded {
 		return
 	}
 
-	atomic.AddInt64(&stats.PagesQueued, 1)
+	queued := atomic.AddInt64(&stats.PagesQueued, 1)
+	if config.MaxPages > 0 && queued > int64(config.MaxPages) {
+		atomic.AddInt64(&stats.PagesQueued, -1)
+		stopReason.CompareAndSwap("", fmt.Sprintf("reached the %d page limit", config.MaxPages))
+		return
+	}
 
 	wg.Add(1)
 	go func() {
@@ -677,8 +722,37 @@ func crawl(link string) {
 		sema <- struct{}{}
 		defer func() { <-sema }()
 
+		// Queued before a Ctrl-C or the time limit, but not started:
+		// leave it. Pages inside a page limit still run; the limit only
+		// stops new pages being queued.
+		if runCtx.Err() != nil {
+			stopping()
+			return
+		}
 		fetchWithRetry(link)
 	}()
+}
+
+// stopping reports whether the crawl should stop taking on new pages, and
+// records why the first time it notices.
+func stopping() bool {
+	if stopReason.Load() != "" {
+		return true
+	}
+	switch runCtx.Err() {
+	case nil:
+		return false
+	case context.DeadlineExceeded:
+		stopReason.CompareAndSwap("", fmt.Sprintf("reached the %v time limit", config.MaxDuration))
+	default:
+		stopReason.CompareAndSwap("", "stopped by the user")
+	}
+	return true
+}
+
+// StopReason says why the last crawl ended early, or "" if it ran to the end.
+func StopReason() string {
+	return stopReason.Load().(string)
 }
 
 func fetchWithRetry(link string) {
