@@ -138,3 +138,35 @@ func TestVisitedKeyDropsFragments(t *testing.T) {
 		t.Error("query was kept although IgnoreQueryParams is on")
 	}
 }
+
+func TestPathFilterKeepsCrawlInSection(t *testing.T) {
+	s := newSiteServer(t)
+	runSearch(t, Config{StartURL: s.URL + "/news/", PathFilter: "/news/", SearchTarget: "<?php"})
+
+	if n := s.hitCount("/news/one"); n != 1 {
+		t.Errorf("/news/one fetched %d times, want 1", n)
+	}
+	for _, path := range []string{"/", "/a"} {
+		if n := s.hitCount(path); n != 0 {
+			t.Errorf("%s is outside /news/ but was fetched %d times", path, n)
+		}
+	}
+}
+
+func TestInPathFilter(t *testing.T) {
+	prev := config
+	t.Cleanup(func() { config = prev })
+
+	config = Config{PathFilter: "/newsroom/"}
+	for p, want := range map[string]bool{
+		"/newsroom/":               true,
+		"/newsroom":                true,
+		"/newsroom/news-releases/": true,
+		"/newsroom-archive/":       false,
+		"/cabinet/":                false,
+	} {
+		if got := inPathFilter(p); got != want {
+			t.Errorf("inPathFilter(%q) = %v, want %v", p, got, want)
+		}
+	}
+}

@@ -1103,6 +1103,10 @@ func extractInternalLinks(body []byte, pageURL string) {
 						continue
 					}
 
+					if !inPathFilter(nextURL.Path) {
+						continue
+					}
+
 					time.Sleep(50 * time.Millisecond)
 					crawl(nextURL.String())
 				}
@@ -1183,6 +1187,17 @@ func sameSite(a, b string) bool {
 		return strings.TrimPrefix(strings.ToLower(h), "www.")
 	}
 	return norm(a) == norm(b)
+}
+
+// inPathFilter reports whether a path is inside the section the user asked
+// to crawl. The filter always ends in "/", so the section's own index,
+// written without the slash, is let through too.
+func inPathFilter(p string) bool {
+	f := config.PathFilter
+	if f == "" {
+		return true
+	}
+	return strings.HasPrefix(p, f) || p == strings.TrimSuffix(f, "/")
 }
 
 // getVisitedKey returns the key to use for visited URL tracking. The

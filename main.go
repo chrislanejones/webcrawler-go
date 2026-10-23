@@ -509,6 +509,9 @@ func main() {
 	fmt.Println("┌─────────────────── LAUNCH CONFIG ───────────────────┐")
 	fmt.Printf("│  🌐 Target:       %-35s │\n", truncateString(config.StartURL, 35))
 	fmt.Printf("│  📋 Mode:         %-35s │\n", mode.String())
+	if pathFilter != "" {
+		fmt.Printf("│  🌲 Path filter:  %-35s │\n", truncateString(pathFilter, 35))
+	}
 	if searchTarget != "" {
 		fmt.Printf("│  🎯 Search for:   %-35s │\n", truncateString(searchTarget, 35))
 	}
