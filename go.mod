@@ -6,8 +6,8 @@ toolchain go1.26.10
 
 require (
 	github.com/charmbracelet/huh v1.0.0
-	github.com/chromedp/cdproto v0.0.0-20260804232424-e85f50dbfd32
-	github.com/chromedp/chromedp v0.16.0
+	github.com/chromedp/cdproto v0.157.8
+	github.com/chromedp/chromedp v0.20.1
 	github.com/ledongthuc/pdf v0.0.0-20260907135840-6c8c28e0e8a0
 	golang.org/x/net v0.61.0
 )
@@ -24,15 +24,11 @@ require (
 	github.com/charmbracelet/x/cellbuf v0.0.15 // indirect
 	github.com/charmbracelet/x/exp/strings v0.1.0 // indirect
 	github.com/charmbracelet/x/term v0.2.2 // indirect
-	github.com/chromedp/sysutil v1.1.0 // indirect
 	github.com/clipperhouse/displaywidth v0.11.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/erikgeiser/coninput v0.0.0-20211004153227-1c3628e74d0f // indirect
 	github.com/go-json-experiment/json v0.0.0-20260820222146-c27c302e5fc3 // indirect
-	github.com/gobwas/httphead v0.1.0 // indirect
-	github.com/gobwas/pool v0.2.1 // indirect
-	github.com/gobwas/ws v1.4.0 // indirect
 	github.com/lucasb-eyer/go-colorful v1.4.1 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/mattn/go-localereader v0.0.1 // indirect
