@@ -306,3 +306,30 @@ func TestIsBlockedStatus(t *testing.T) {
 		}
 	}
 }
+
+func TestBotProtectionIgnoresOrdinaryPages(t *testing.T) {
+	// Taken from labor.virginia.gov and vita.virginia.gov, October 2026. Both
+	// load assets from cdnjs.cloudflare.com and were mistaken for challenges.
+	ordinary := map[string]string{
+		"cdnjs stylesheet":       `<html><head><title>Labor</title><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css"></head><body>Secretary of Labor</body></html>`,
+		"cdnjs script":           `<html><head><title>VITA</title><!-- highlightjs --><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/default.min.css"></head><body>VITA</body></html>`,
+		"recaptcha form":         `<html><body><form action="/contact"><div class="g-recaptcha"></div><p>This site is protected by reCAPTCHA.</p></form></body></html>`,
+		"access denied in prose": `<html><body><p>If you see access denied when filing, call the help desk.</p></body></html>`,
+	}
+	for name, body := range ordinary {
+		if detectBotProtection(body) {
+			t.Errorf("%s: ordinary page detected as bot protection", name)
+		}
+	}
+
+	challenges := map[string]string{
+		"cloudflare interstitial": `<html><head><title>Just a moment...</title></head><body>Enable JavaScript and cookies to continue</body></html>`,
+		"cloudflare block":        `<html><head><title>Attention Required! | Cloudflare</title></head><body>Sorry, you have been blocked</body></html>`,
+		"browser check":           `<html><body>Checking your browser before accessing the site. Please wait...</body></html>`,
+	}
+	for name, body := range challenges {
+		if !detectBotProtection(body) {
+			t.Errorf("%s: challenge page not detected", name)
+		}
+	}
+}

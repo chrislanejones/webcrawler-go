@@ -1,7 +1,8 @@
 # Parking Lot — webcrawler-go
 
 Findings from the September 4, 2026 update pass. Items 1 through 3 are fixed.
-Items 4 and 5 are still open.
+Items 4 and 5 are still open. Items 8 through 11 came from the October 23,
+2026 PHP sweep of the Virginia governor and secretary sites and are open.
 
 ---
 
@@ -106,6 +107,56 @@ refused connections and timeouts fail identically for GET, so the retry only
 bought a second wait. Link checks also got their own 15 second deadline,
 separate from the 30 second page-fetch timeout, since verifying a link is
 cheaper than fetching a page to crawl.
+
+## 8. Bot detection trips on the word "cloudflare" in normal pages — HIGH
+
+`internal/crawler/crawler.go` (`detectBotProtection`)
+
+Found October 23, 2026 while searching the Virginia secretary sites for
+`<?php`. labor.virginia.gov loads Font Awesome from
+`cdnjs.cloudflare.com`. The bot check is a plain substring match over the
+whole body, so the homepage counted as a challenge page, its links were
+never followed, and the retry passes failed the same way. The site was
+never searched: 4 pages checked, 0 HTML pages scanned.
+
+The same list has "captcha", "access denied" and "security check", which
+show up on ordinary pages (a contact form with reCAPTCHA, an FOIA page).
+The same day's sweep of 69 virginia.gov domains hit it on 14 sites, including
+vita.virginia.gov (highlight.js from cdnjs) and www.virginia.gov. Each one
+stopped at the homepage, and the run reported "0 matches".
+
+Fix, uncommitted, on branch `fix/bot-check-false-positives` in
+`~/ai-repo/webcrawler-go-botcheck`: the crawler now uses the challenge-pattern
+detector Sitemap mode already had, so there is one detector instead of two.
+A regression test uses the labor and vita markup, and it fails on the old
+code. After the fix, all 14 sites crawled normally with 0 blocked, and vita
+went from 4 pages to 1,300.
+
+## 9. Path filter is ignored outside Page Capture and Sitemap — MEDIUM
+
+`internal/crawler/crawler.go` (`extractInternalLinks`)
+
+The wizard says "Will only crawl pages under /newsroom/", but only
+`pdfcapture.go` and `sitemap.go` read `PathFilter`. In Find Link, Find
+Word, Broken Links and Oversized Images the whole host is crawled.
+governor.virginia.gov from `/newsroom` with the filter on: 636 pages, the
+same as the whole-site run (635).
+
+The LAUNCH CONFIG box also leaves the path filter out, though the README
+shows a "🌲 Path filter" row there.
+
+## 10. Search mode does not record which pages were blocked — LOW
+
+Find Word/Link writes only matches to the CSV. A blocked page shows up as
+a count in the stats and nowhere else, so "0 matches" cannot be told
+apart from "never read". Write BLOCKED rows the way Broken Link mode does.
+
+## 11. One case-sensitive search term per run — LOW
+
+`processSearchMode` is `bytes.Contains` on the raw body. Hunting for leaked
+PHP means one full crawl per pattern (`<?php`, `<?PHP`, `<?=`, "Fatal
+error"), each one hitting the server again. A comma-separated list of terms,
+or a case-insensitive option, would do it in one pass.
 
 ## Tests
 

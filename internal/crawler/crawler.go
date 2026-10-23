@@ -1083,32 +1083,48 @@ func extractInternalLinks(body []byte, pageURL string) {
 	f(doc)
 }
 
+// detectBotProtection reports whether body is a bot challenge page rather than
+// the page asked for. It matches challenge wording, not vendor names: plenty of
+// ordinary pages load assets from cdnjs.cloudflare.com or carry a reCAPTCHA
+// form, and a bare substring match on those ended crawls at the homepage.
 func detectBotProtection(body string) bool {
-	indicators := []string{
-		"checking your browser",
-		"ddos protection",
-		"please enable javascript",
-		"access denied",
-		"security check",
-		"verify you are human",
-		"captcha",
-		"incapsula",
-		"perimeterx",
-		"sucuri",
-		"cloudflare",
-		"please wait while we verify",
-		"just a moment",
-		"ray id",
-		"attention required",
-		"sorry, you have been blocked",
+	bodyLower := strings.ToLower(body)
+
+	// Only trigger on actual challenge page patterns
+	challengePatterns := []struct {
+		required []string // ALL must be present
+	}{
+		{[]string{"checking your browser", "please wait"}},
+		{[]string{"just a moment", "enable javascript"}},
+		{[]string{"ddos protection", "please wait"}},
+		{[]string{"attention required", "cloudflare"}},
+		{[]string{"sorry, you have been blocked"}},
+		{[]string{"access denied", "you don't have permission"}},
+		{[]string{"verify you are human", "captcha"}},
+		{[]string{"security check", "please complete"}},
 	}
 
-	bodyLower := strings.ToLower(body)
-	for _, indicator := range indicators {
-		if strings.Contains(bodyLower, indicator) {
+	for _, pattern := range challengePatterns {
+		allMatch := true
+		for _, required := range pattern.required {
+			if !strings.Contains(bodyLower, required) {
+				allMatch = false
+				break
+			}
+		}
+		if allMatch {
 			return true
 		}
 	}
+
+	// Check for very short pages that are likely challenge pages
+	if len(body) < 2000 {
+		if strings.Contains(bodyLower, "checking your browser") ||
+			strings.Contains(bodyLower, "please enable javascript and cookies") {
+			return true
+		}
+	}
+
 	return false
 }
 
