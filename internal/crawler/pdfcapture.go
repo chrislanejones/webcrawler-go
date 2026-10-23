@@ -453,7 +453,7 @@ func capturePage(pageURL string) []string {
 			}
 
 			// Only follow same-domain links
-			if u.Host != pdfBaseURL.Host {
+			if !sameSite(u.Host, pdfBaseURL.Host) {
 				atomic.AddInt64(&pdfStats.SkippedExternal, 1)
 				continue
 			}

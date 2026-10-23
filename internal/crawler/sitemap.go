@@ -309,7 +309,7 @@ func extractLinksForSitemap(body []byte, sourceURL string) {
 					resolved := sitemapBase.ResolveReference(u)
 
 					// Only follow same-host links
-					if resolved.Host != sitemapBase.Host {
+					if !sameSite(resolved.Host, sitemapBase.Host) {
 						continue
 					}
 

@@ -1086,19 +1086,25 @@ func extractInternalLinks(body []byte, pageURL string) {
 						continue
 					}
 
-					next := pageBase.ResolveReference(u).String()
-					nextURL, err := url.Parse(next)
-					if err != nil {
+					// A JavaScript template left in the markup, such as
+					// href="'+ item.link +'", is not a link to anything.
+					if strings.Contains(a.Val, "'+") || strings.Contains(a.Val, "+'") {
 						continue
 					}
 
-					if nextURL.Host != baseURL.Host {
+					nextURL := pageBase.ResolveReference(u)
+					// #main and #top point back into the same page. Keeping
+					// them made every page with a skip link a second fetch.
+					nextURL.Fragment = ""
+					nextURL.RawFragment = ""
+
+					if !sameSite(nextURL.Host, baseURL.Host) {
 						atomic.AddInt64(&stats.SkippedExternal, 1)
 						continue
 					}
 
 					time.Sleep(50 * time.Millisecond)
-					crawl(next)
+					crawl(nextURL.String())
 				}
 			}
 		}
@@ -1168,22 +1174,32 @@ func handleNetworkError(err error) {
 	}
 }
 
-// getVisitedKey returns the key to use for visited URL tracking.
-// When IgnoreQueryParams is enabled, it strips query parameters so that
-// URLs like page.html?a=1 and page.html?b=2 are treated as the same page.
-func getVisitedKey(link string) string {
-	if !config.IgnoreQueryParams {
-		return link
+// sameSite reports whether two hosts belong to the site being crawled. The
+// bare domain and its www. form are one site: most virginia.gov hosts
+// redirect one to the other, and links on the page use whichever the CMS
+// prefers, so an exact match treated half the site as external.
+func sameSite(a, b string) bool {
+	norm := func(h string) string {
+		return strings.TrimPrefix(strings.ToLower(h), "www.")
 	}
+	return norm(a) == norm(b)
+}
 
+// getVisitedKey returns the key to use for visited URL tracking. The
+// fragment is always dropped, since #section names a place in a page the
+// crawler has already fetched. When IgnoreQueryParams is enabled the query is
+// dropped too, so page.html?a=1 and page.html?b=2 are the same page.
+func getVisitedKey(link string) string {
 	u, err := url.Parse(link)
 	if err != nil {
 		return link
 	}
 
-	// Strip query parameters and fragment
-	u.RawQuery = ""
 	u.Fragment = ""
+	u.RawFragment = ""
+	if config.IgnoreQueryParams {
+		u.RawQuery = ""
+	}
 
 	return u.String()
 }
