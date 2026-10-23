@@ -106,6 +106,9 @@ func StartSitemapGeneration(cfg Config) {
 
 	// Print final stats
 	printSitemapFinalStats(cfg)
+	if reason := StopReason(); reason != "" {
+		fmt.Printf("\n⏹️  STOPPED EARLY: %s. The sitemap holds the pages checked so far.\n", reason)
+	}
 }
 
 func printSitemapLiveStats(stop chan bool) {
@@ -138,6 +141,10 @@ func printSitemapLiveStats(stop chan bool) {
 }
 
 func crawlForSitemap(link string) {
+	if stopping() {
+		return
+	}
+
 	// Normalize URL
 	parsedURL, err := url.Parse(link)
 	if err != nil {
@@ -173,11 +180,14 @@ func crawlForSitemap(link string) {
 	}
 
 	// Only add to sitemap URLs if it matches the filter
+	if pageLimitReached(atomic.AddInt64(&sitemapStats.PagesFound, 1)) {
+		atomic.AddInt64(&sitemapStats.PagesFound, -1)
+		return
+	}
+
 	if includeInSitemap {
 		sitemapURLs.Store(normalizedURL, &SitemapEntry{URL: normalizedURL})
 	}
-
-	atomic.AddInt64(&sitemapStats.PagesFound, 1)
 
 	sitemapWG.Add(1)
 	go func(shouldInclude bool) {
@@ -185,6 +195,12 @@ func crawlForSitemap(link string) {
 		sitemapSema <- struct{}{}
 		defer func() { <-sitemapSema }()
 
+		// A page never fetched is not known to exist, so it leaves the
+		// sitemap rather than going in unchecked.
+		if abandoning() {
+			sitemapURLs.Delete(normalizedURL)
+			return
+		}
 		fetchForSitemap(normalizedURL, shouldInclude)
 	}(includeInSitemap)
 }

@@ -380,3 +380,48 @@ func TestStartRedirectToAnotherHostIsFollowed(t *testing.T) {
 		t.Errorf("want the match on the redirect target, got %v", rows)
 	}
 }
+
+func TestSitemapHonorsPageLimit(t *testing.T) {
+	s := newSiteServer(t)
+	t.Chdir(t.TempDir())
+	Start(Config{
+		StartURL:          s.URL + "/",
+		Mode:              ModeSitemap,
+		MaxConcurrency:    1,
+		RequestsPerSecond: -1,
+		MaxPages:          2,
+		SitemapOpts:       SitemapOptions{Filename: "sitemap.xml", ChangeFreq: "weekly", Priority: 0.5},
+	})
+
+	data, err := os.ReadFile("sitemap.xml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(data), "<loc>"); n > 2 {
+		t.Errorf("sitemap has %d URLs with a page limit of 2", n)
+	}
+	if !strings.Contains(StopReason(), "page limit") {
+		t.Errorf("StopReason = %q", StopReason())
+	}
+}
+
+func TestSitemapStopsOnCancel(t *testing.T) {
+	s := newSiteServer(t)
+	t.Chdir(t.TempDir())
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	StartContext(ctx, Config{
+		StartURL:          s.URL + "/",
+		Mode:              ModeSitemap,
+		MaxConcurrency:    1,
+		RequestsPerSecond: -1,
+		SitemapOpts:       SitemapOptions{Filename: "sitemap.xml", ChangeFreq: "weekly", Priority: 0.5},
+	})
+
+	if n := s.hitCount("/"); n != 0 {
+		t.Errorf("a cancelled sitemap run fetched / %d times", n)
+	}
+	if _, err := os.Stat("sitemap.xml"); err != nil {
+		t.Errorf("want a sitemap file even after a stop: %v", err)
+	}
+}

@@ -30,10 +30,6 @@ type PDFCaptureStats struct {
 }
 
 var (
-	cancelRequested int32 // atomic flag for cancellation
-)
-
-var (
 	pdfVisited           sync.Map
 	pdfWg                sync.WaitGroup
 	pdfSema              chan struct{}
@@ -58,7 +54,6 @@ func StartPDFCapture(cfg Config) {
 	pdfCaptureFormat = cfg.CaptureFormat
 	pdfPathFilter = cfg.PathFilter
 	pdfIgnoreQueryParams = cfg.IgnoreQueryParams
-	atomic.StoreInt32(&cancelRequested, 0)
 
 	// Default to both if not set
 	if pdfCaptureFormat == 0 {
@@ -132,8 +127,8 @@ func listenForCancel(stop chan bool) {
 			return
 		case input := <-inputChan:
 			if input == "c" {
-				atomic.StoreInt32(&cancelRequested, 1)
 				fmt.Println("\n\n⏹️  CANCEL REQUESTED - Finishing current captures...")
+				runCancel()
 				fmt.Println("   (Waiting for in-progress pages to complete)")
 				return
 			}
@@ -142,8 +137,7 @@ func listenForCancel(stop chan bool) {
 }
 
 func crawlForPDF(link string) {
-	// Check if cancel requested
-	if atomic.LoadInt32(&cancelRequested) == 1 {
+	if stopping() {
 		return
 	}
 
@@ -155,7 +149,10 @@ func crawlForPDF(link string) {
 		return
 	}
 
-	atomic.AddInt64(&pdfStats.PagesQueued, 1)
+	if pageLimitReached(atomic.AddInt64(&pdfStats.PagesQueued, 1)) {
+		atomic.AddInt64(&pdfStats.PagesQueued, -1)
+		return
+	}
 
 	pdfWg.Add(1)
 	go func(pageURL string) {
@@ -163,8 +160,8 @@ func crawlForPDF(link string) {
 		pdfSema <- struct{}{}
 		defer func() { <-pdfSema }()
 
-		// Check again in case cancel happened while waiting
-		if atomic.LoadInt32(&cancelRequested) == 1 {
+		// Check again in case a stop came while waiting for a slot
+		if abandoning() {
 			return
 		}
 
@@ -173,8 +170,8 @@ func crawlForPDF(link string) {
 		// Capture PDF/screenshot and extract links from the rendered DOM
 		links := capturePage(pageURL)
 
-		// Queue discovered links for crawling (only if not cancelled)
-		if atomic.LoadInt32(&cancelRequested) == 0 {
+		// Queue discovered links for crawling (only if not stopping)
+		if !stopping() {
 			for _, nextLink := range links {
 				crawlForPDF(nextLink)
 			}
@@ -222,6 +219,8 @@ func capturePage(pageURL string) []string {
 		}
 	}
 
+	waitTurn()
+
 	// Create Chrome context with options for better rendering
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.Flag("headless", true),
@@ -233,6 +232,7 @@ func capturePage(pageURL string) []string {
 		chromedp.Flag("ignore-certificate-errors", true),
 		chromedp.WindowSize(1920, 1080),
 	)
+	opts = append(opts, chromeProcessOptions()...)
 
 	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), opts...)
 	defer allocCancel()
@@ -685,7 +685,7 @@ func printPDFLiveStats(stop chan bool) {
 
 func printPDFFinalStats() {
 	elapsed := time.Since(pdfStartTime)
-	wasCancelled := atomic.LoadInt32(&cancelRequested) == 1
+	wasCancelled := StopReason() != ""
 
 	// Clear any remaining progress bar output
 	fmt.Print("\033[2K\r") // Clear current line
@@ -694,7 +694,7 @@ func printPDFFinalStats() {
 	fmt.Println()
 	fmt.Println("╔═══════════════════════════════════════════════════════════════════╗")
 	if wasCancelled {
-		fmt.Println("║                 📊 PAGE CAPTURE CANCELLED 📊                      ║")
+		fmt.Println("║               📊 PAGE CAPTURE STOPPED EARLY 📊                    ║")
 	} else {
 		fmt.Println("║                  📊 PAGE CAPTURE COMPLETE 📊                      ║")
 	}
@@ -722,7 +722,8 @@ func printPDFFinalStats() {
 	fmt.Printf("║  📁 Output Directory:      %-40s ║\n", pdfOutputDir)
 	fmt.Println("║                                                                   ║")
 	if wasCancelled {
-		fmt.Println("║  ℹ️  Crawl was cancelled early - partial results saved            ║")
+		fmt.Println("║  ℹ️  Crawl stopped early - partial results saved                  ║")
+		fmt.Printf("║  ⏹️  %-60s ║\n", truncateString(StopReason(), 60))
 		fmt.Println("║                                                                   ║")
 	}
 	fmt.Println("╚═══════════════════════════════════════════════════════════════════╝")

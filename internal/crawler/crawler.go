@@ -163,8 +163,9 @@ type BlockedPage struct {
 }
 
 var (
-	runCtx        = context.Background()
-	stopReason    atomic.Value // string
+	runCtx                           = context.Background()
+	runCancel     context.CancelFunc = func() {}
+	stopReason    atomic.Value       // string
 	visited       sync.Map
 	blockedQueue  sync.Map
 	wg            sync.WaitGroup
@@ -343,14 +344,16 @@ func Start(cfg Config) {
 // are queued, requests already out are allowed to finish, and the results
 // file and final statistics are still written.
 //
-// The limits and early stop apply to Find Link, Find Word, Broken Links and
-// Oversized Images. Page Capture, Sitemap and JSON Feed run their own loops.
+// The limits, early stop and request pacing apply to every mode. In Page
+// Capture and JSON Feed, c + Enter stops the run the same way Ctrl-C does.
 func StartContext(ctx context.Context, cfg Config) {
 	if cfg.MaxDuration > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, cfg.MaxDuration)
 		defer cancel()
 	}
+	ctx, runCancel = context.WithCancel(ctx)
+	defer runCancel()
 	runCtx = ctx
 	stopReason.Store("")
 
@@ -832,10 +835,8 @@ func crawl(link string) {
 		return
 	}
 
-	queued := atomic.AddInt64(&stats.PagesQueued, 1)
-	if config.MaxPages > 0 && queued > int64(config.MaxPages) {
+	if pageLimitReached(atomic.AddInt64(&stats.PagesQueued, 1)) {
 		atomic.AddInt64(&stats.PagesQueued, -1)
-		stopReason.CompareAndSwap("", fmt.Sprintf("reached the %d page limit", config.MaxPages))
 		return
 	}
 
@@ -845,11 +846,7 @@ func crawl(link string) {
 		sema <- struct{}{}
 		defer func() { <-sema }()
 
-		// Queued before a Ctrl-C or the time limit, but not started:
-		// leave it. Pages inside a page limit still run; the limit only
-		// stops new pages being queued.
-		if runCtx.Err() != nil {
-			stopping()
+		if abandoning() {
 			return
 		}
 		fetchWithRetry(link)
@@ -870,6 +867,27 @@ func stopping() bool {
 	default:
 		stopReason.CompareAndSwap("", "stopped by the user")
 	}
+	return true
+}
+
+// abandoning reports whether pages queued but not yet started should be
+// dropped: true after Ctrl-C, c + Enter or the time limit. Pages inside a
+// page limit still run; that limit only stops new pages being queued.
+func abandoning() bool {
+	if runCtx.Err() != nil {
+		stopping()
+		return true
+	}
+	return false
+}
+
+// pageLimitReached reports whether the page with this queue position is past
+// the page limit, and records the stop the first time it is.
+func pageLimitReached(position int64) bool {
+	if config.MaxPages <= 0 || position <= int64(config.MaxPages) {
+		return false
+	}
+	stopReason.CompareAndSwap("", fmt.Sprintf("reached the %d page limit", config.MaxPages))
 	return true
 }
 

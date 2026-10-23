@@ -40,16 +40,15 @@ type JSONFeedStats struct {
 }
 
 var (
-	jsonFeedStats       JSONFeedStats
-	jsonFeedStartTime   time.Time
-	jsonFeedOutputDir   string
-	jsonFeedFormat      CaptureFormat
-	jsonFeedBaseURL     *url.URL
-	jsonFeedWg          sync.WaitGroup
-	jsonFeedSema        chan struct{}
-	jsonFeedCSVFile     string
-	jsonFeedCSVMu       sync.Mutex
-	jsonCancelRequested int32
+	jsonFeedStats     JSONFeedStats
+	jsonFeedStartTime time.Time
+	jsonFeedOutputDir string
+	jsonFeedFormat    CaptureFormat
+	jsonFeedBaseURL   *url.URL
+	jsonFeedWg        sync.WaitGroup
+	jsonFeedSema      chan struct{}
+	jsonFeedCSVFile   string
+	jsonFeedCSVMu     sync.Mutex
 )
 
 // StartJSONFeedCapture fetches a JSON feed and captures all article pages
@@ -57,7 +56,6 @@ func StartJSONFeedCapture(cfg Config) {
 	jsonFeedStats = JSONFeedStats{}
 	jsonFeedStartTime = time.Now()
 	jsonFeedFormat = cfg.CaptureFormat
-	atomic.StoreInt32(&jsonCancelRequested, 0)
 
 	if jsonFeedFormat == 0 {
 		jsonFeedFormat = CaptureBoth
@@ -87,7 +85,7 @@ func StartJSONFeedCapture(cfg Config) {
 
 	// Start keyboard listener for cancellation
 	stopKeyListener := make(chan bool)
-	go listenForJSONFeedCancel(stopKeyListener)
+	go listenForCancel(stopKeyListener)
 
 	fmt.Println("┌─────────────────── JSON FEED CAPTURE STARTING ──────────────────┐")
 	fmt.Printf("│  🌐 Base URL:  %-45s │\n", truncateString(cfg.StartURL, 45))
@@ -129,9 +127,14 @@ func StartJSONFeedCapture(cfg Config) {
 		atomic.StoreInt64(&jsonFeedStats.ItemsFiltered, int64(len(items)))
 	}
 
+	if cfg.MaxPages > 0 && len(items) > cfg.MaxPages {
+		items = items[:cfg.MaxPages]
+		stopReason.CompareAndSwap("", fmt.Sprintf("reached the %d page limit", cfg.MaxPages))
+	}
+
 	// Process each item
 	for _, item := range items {
-		if atomic.LoadInt32(&jsonCancelRequested) == 1 {
+		if stopping() {
 			break
 		}
 
@@ -148,7 +151,7 @@ func StartJSONFeedCapture(cfg Config) {
 			jsonFeedSema <- struct{}{}
 			defer func() { <-jsonFeedSema }()
 
-			if atomic.LoadInt32(&jsonCancelRequested) == 1 {
+			if abandoning() {
 				return
 			}
 
@@ -340,6 +343,7 @@ func sanitizeHeadlineFilename(headline, dateCode string) string {
 
 func captureJSONFeedPage(pageURL string, item FeedItem) {
 	atomic.AddInt64(&jsonFeedStats.PagesCapture, 1)
+	waitTurn()
 
 	// Use headline for filename if available, otherwise use URL
 	var filename string
@@ -378,6 +382,7 @@ func captureJSONFeedPage(pageURL string, item FeedItem) {
 		chromedp.Flag("ignore-certificate-errors", true),
 		chromedp.WindowSize(1920, 1080),
 	)
+	opts = append(opts, chromeProcessOptions()...)
 
 	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), opts...)
 	defer allocCancel()
@@ -541,19 +546,6 @@ func captureJSONFeedPage(pageURL string, item FeedItem) {
 	}
 }
 
-func listenForJSONFeedCancel(stop chan bool) {
-	// Reuse the same cancel listener pattern
-	for {
-		select {
-		case <-stop:
-			return
-		default:
-			// Non-blocking check - actual input handled by main cancel listener
-			time.Sleep(100 * time.Millisecond)
-		}
-	}
-}
-
 func printJSONFeedLiveStats(stop chan bool) {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
@@ -629,14 +621,14 @@ func printJSONFeedLiveStats(stop chan bool) {
 
 func printJSONFeedFinalStats() {
 	elapsed := time.Since(jsonFeedStartTime)
-	wasCancelled := atomic.LoadInt32(&jsonCancelRequested) == 1
+	wasCancelled := StopReason() != ""
 
 	fmt.Print("\033[2K\r")
 	fmt.Println()
 	fmt.Println()
 	fmt.Println("╔═══════════════════════════════════════════════════════════════════╗")
 	if wasCancelled {
-		fmt.Println("║               📊 JSON FEED CAPTURE CANCELLED 📊                  ║")
+		fmt.Println("║             📊 JSON FEED CAPTURE STOPPED EARLY 📊                ║")
 	} else {
 		fmt.Println("║                📊 JSON FEED CAPTURE COMPLETE 📊                  ║")
 	}
@@ -666,7 +658,8 @@ func printJSONFeedFinalStats() {
 	fmt.Printf("║  📋 CSV Index:             %-40s ║\n", "feed_items.csv")
 	fmt.Println("║                                                                   ║")
 	if wasCancelled {
-		fmt.Println("║  ℹ️  Capture was cancelled early - partial results saved         ║")
+		fmt.Println("║  ℹ️  Capture stopped early - partial results saved               ║")
+		fmt.Printf("║  ⏹️  %-60s ║\n", truncateString(StopReason(), 60))
 		fmt.Println("║                                                                   ║")
 	}
 	fmt.Println("╚═══════════════════════════════════════════════════════════════════╝")
