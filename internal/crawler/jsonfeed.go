@@ -79,6 +79,14 @@ func StartJSONFeedCapture(cfg Config) {
 
 	jsonFeedSema = make(chan struct{}, cfg.MaxConcurrency)
 
+	var stopBrowser func()
+	captureBrowser, stopBrowser, err = newBrowser()
+	if err != nil {
+		fmt.Printf("❌ %v\n", err)
+		return
+	}
+	defer stopBrowser()
+
 	// Start live stats
 	stopStats := make(chan bool)
 	go printJSONFeedLiveStats(stopStats)
@@ -371,23 +379,8 @@ func captureJSONFeedPage(pageURL string, item FeedItem) {
 		}
 	}
 
-	// Create Chrome context
-	opts := append(chromedp.DefaultExecAllocatorOptions[:],
-		chromedp.Flag("headless", true),
-		chromedp.Flag("disable-gpu", true),
-		chromedp.Flag("no-sandbox", true),
-		chromedp.Flag("disable-setuid-sandbox", true),
-		chromedp.Flag("disable-dev-shm-usage", true),
-		chromedp.Flag("disable-web-security", true),
-		chromedp.Flag("ignore-certificate-errors", true),
-		chromedp.WindowSize(1920, 1080),
-	)
-	opts = append(opts, chromeProcessOptions()...)
-
-	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), opts...)
-	defer allocCancel()
-
-	ctx, cancel := chromedp.NewContext(allocCtx)
+	// A new tab in the run's one browser
+	ctx, cancel := chromedp.NewContext(captureBrowser)
 	defer cancel()
 
 	ctx, cancel = context.WithTimeout(ctx, 180*time.Second)

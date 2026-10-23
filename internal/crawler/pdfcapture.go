@@ -29,6 +29,10 @@ type PDFCaptureStats struct {
 	SkippedExternal int64
 }
 
+// captureBrowser is the one Chrome a Page Capture or JSON Feed run uses.
+// Each page opens a tab in it.
+var captureBrowser context.Context
+
 var (
 	pdfVisited           sync.Map
 	pdfWg                sync.WaitGroup
@@ -73,6 +77,14 @@ func StartPDFCapture(cfg Config) {
 	os.MkdirAll(pdfOutputDir, 0755)
 
 	pdfSema = make(chan struct{}, cfg.MaxConcurrency)
+
+	var stopBrowser func()
+	captureBrowser, stopBrowser, err = newBrowser()
+	if err != nil {
+		fmt.Printf("❌ %v\n", err)
+		return
+	}
+	defer stopBrowser()
 
 	// Start live stats
 	stopStats := make(chan bool)
@@ -221,23 +233,8 @@ func capturePage(pageURL string) []string {
 
 	waitTurn()
 
-	// Create Chrome context with options for better rendering
-	opts := append(chromedp.DefaultExecAllocatorOptions[:],
-		chromedp.Flag("headless", true),
-		chromedp.Flag("disable-gpu", true),
-		chromedp.Flag("no-sandbox", true),
-		chromedp.Flag("disable-setuid-sandbox", true),
-		chromedp.Flag("disable-dev-shm-usage", true),
-		chromedp.Flag("disable-web-security", true),
-		chromedp.Flag("ignore-certificate-errors", true),
-		chromedp.WindowSize(1920, 1080),
-	)
-	opts = append(opts, chromeProcessOptions()...)
-
-	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), opts...)
-	defer allocCancel()
-
-	ctx, cancel := chromedp.NewContext(allocCtx)
+	// A new tab in the run's one browser
+	ctx, cancel := chromedp.NewContext(captureBrowser)
 	defer cancel()
 
 	// Set timeout (180s for slow/heavy pages)
