@@ -362,3 +362,21 @@ func TestOutputDir(t *testing.T) {
 		t.Errorf("want the results file in out/oaa, found %v", files)
 	}
 }
+
+func TestStartRedirectToAnotherHostIsFollowed(t *testing.T) {
+	// The new site, reached only by redirect, links relatively.
+	newSite := newSiteServer(t)
+	oldSite := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, newSite.URL+r.URL.Path, http.StatusMovedPermanently)
+	}))
+	t.Cleanup(oldSite.Close)
+
+	rows := runSearch(t, Config{StartURL: oldSite.URL + "/", SearchTarget: "<?php"})
+
+	if n := newSite.hitCount("/news/one"); n != 1 {
+		t.Errorf("/news/one on the redirect target fetched %d times, want 1", n)
+	}
+	if len(rows) != 1 {
+		t.Errorf("want the match on the redirect target, got %v", rows)
+	}
+}

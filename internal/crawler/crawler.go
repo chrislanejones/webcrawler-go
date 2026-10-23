@@ -175,7 +175,6 @@ var (
 	httpClient    *http.Client
 	resultFile    string
 	config        Config
-	baseURL       *url.URL
 	successfulHit bool
 	successMu     sync.Mutex
 )
@@ -363,12 +362,12 @@ func StartContext(ctx context.Context, cfg Config) {
 
 	sema = make(chan struct{}, cfg.MaxConcurrency)
 
-	var err error
-	baseURL, err = url.Parse(cfg.StartURL)
+	start, err := url.Parse(cfg.StartURL)
 	if err != nil {
 		fmt.Printf("❌ Invalid start URL: %v\n", err)
 		return
 	}
+	siteBase.Store(start)
 
 	timestamp := time.Now().Format("2006-01-02_15-04-05")
 	if cfg.OutputDir != "" {
@@ -417,9 +416,9 @@ func StartContext(ctx context.Context, cfg Config) {
 			crawl(entryPoint)
 		}
 
-		blockedQueue.Store(cfg.StartURL, &BlockedPage{URL: cfg.StartURL, Attempts: 0})
+		blockedQueue.Store(config.StartURL, &BlockedPage{URL: config.StartURL, Attempts: 0})
 	} else {
-		crawl(cfg.StartURL)
+		crawl(config.StartURL)
 	}
 
 	wg.Wait()
@@ -472,6 +471,38 @@ func reportUnsearched() {
 		writeNotSearched(key.(string), "", reason)
 		return true
 	})
+}
+
+// finalURL is the address a response actually came from, after redirects.
+// Relative links on the page resolve against it, as they do in a browser.
+func finalURL(resp *http.Response, requested string) string {
+	if resp.Request != nil && resp.Request.URL != nil {
+		return resp.Request.URL.String()
+	}
+	return requested
+}
+
+// siteBase is the site being crawled. It starts as the URL the user gave and
+// moves once if the start page redirects to a different site.
+var siteBase atomic.Pointer[url.URL]
+
+// adoptStartRedirect handles a start page that lands on a different site
+// (vaemergency.gov to vdem.virginia.gov, cdo to odga). That site is the one
+// to crawl: every link on it points there, and the host the user typed would
+// make all of them look external. It costs no extra request; it reads where
+// the start page's own response came from.
+func adoptStartRedirect(requested string, resp *http.Response) {
+	if requested != config.StartURL || resp.Request == nil {
+		return
+	}
+	landed := resp.Request.URL
+	start := siteBase.Load()
+	if sameSite(landed.Host, start.Host) {
+		return
+	}
+	if siteBase.CompareAndSwap(start, landed) {
+		fmt.Printf("\n↪️  %s redirects to %s; crawling that site.\n", start.Host, landed.Host)
+	}
 }
 
 func countBlockedQueue() int {
@@ -949,6 +980,7 @@ func fetchPage(link string, attempt int) (success bool, blocked bool, err error)
 		return false, false, fmt.Errorf("status %d", resp.StatusCode)
 	}
 
+	adoptStartRedirect(link, resp)
 	contentType := resp.Header.Get("Content-Type")
 
 	// Go's http client automatically decompresses gzip when we don't set Accept-Encoding manually
@@ -969,17 +1001,17 @@ func fetchPage(link string, attempt int) (success bool, blocked bool, err error)
 		processSearchMode(link, contentType, bodyBytes)
 	case ModeBrokenLinks:
 		if strings.Contains(contentType, "text/html") {
-			extractAndCheckLinks(bodyBytes, link)
+			extractAndCheckLinks(bodyBytes, finalURL(resp, link))
 		}
 	case ModeOversizedImages:
 		if strings.Contains(contentType, "text/html") {
-			extractAndCheckImages(bodyBytes, link)
+			extractAndCheckImages(bodyBytes, finalURL(resp, link))
 		}
 	}
 
 	if strings.Contains(contentType, "text/html") {
 		atomic.AddInt64(&stats.HTMLScanned, 1)
-		extractInternalLinks(bodyBytes, link)
+		extractInternalLinks(bodyBytes, finalURL(resp, link))
 	}
 
 	return true, false, nil
@@ -1018,6 +1050,7 @@ func fetchPageForRetry(link string, retryAttempt int) bool {
 		return false
 	}
 
+	adoptStartRedirect(link, resp)
 	contentType := resp.Header.Get("Content-Type")
 
 	bodyBytes, err := io.ReadAll(resp.Body)
@@ -1039,17 +1072,17 @@ func fetchPageForRetry(link string, retryAttempt int) bool {
 		processSearchMode(link, contentType, bodyBytes)
 	case ModeBrokenLinks:
 		if strings.Contains(contentType, "text/html") {
-			extractAndCheckLinks(bodyBytes, link)
+			extractAndCheckLinks(bodyBytes, finalURL(resp, link))
 		}
 	case ModeOversizedImages:
 		if strings.Contains(contentType, "text/html") {
-			extractAndCheckImages(bodyBytes, link)
+			extractAndCheckImages(bodyBytes, finalURL(resp, link))
 		}
 	}
 
 	if strings.Contains(contentType, "text/html") {
 		atomic.AddInt64(&stats.HTMLScanned, 1)
-		extractInternalLinks(bodyBytes, link)
+		extractInternalLinks(bodyBytes, finalURL(resp, link))
 	}
 
 	visited.Store(getVisitedKey(link), true)
@@ -1410,7 +1443,7 @@ func extractInternalLinks(body []byte, pageURL string) {
 					nextURL.Fragment = ""
 					nextURL.RawFragment = ""
 
-					if !sameSite(nextURL.Host, baseURL.Host) {
+					if !sameSite(nextURL.Host, siteBase.Load().Host) {
 						atomic.AddInt64(&stats.SkippedExternal, 1)
 						continue
 					}
