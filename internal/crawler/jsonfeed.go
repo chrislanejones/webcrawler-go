@@ -135,9 +135,10 @@ func StartJSONFeedCapture(cfg Config) {
 		stopReason.CompareAndSwap("", fmt.Sprintf("reached the %d page limit", cfg.MaxPages))
 	}
 
-	// Process each item
+	// Process each item. The page limit already trimmed the list, so only a
+	// Ctrl-C, c + Enter or the time limit ends the loop early.
 	for _, item := range items {
-		if stopping() {
+		if abandoning() {
 			break
 		}
 
