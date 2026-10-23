@@ -272,3 +272,50 @@ func TestOversizedImagesMeasuredOnce(t *testing.T) {
 		t.Errorf("/big.jpg downloaded %d times although HEAD gave its size", n)
 	}
 }
+
+func TestSearchSeveralTermsIgnoringCase(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			fmt.Fprint(w, `<html><body><a href="/short">s</a><a href="/error">e</a><p>clean</p></body></html>`)
+		case "/short":
+			fmt.Fprint(w, `<html><body><?= $title ?></body></html>`)
+		case "/error":
+			fmt.Fprint(w, `<html><body><b>FATAL ERROR</b>: Uncaught Error in /var/www/index.php on line 12</body></html>`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	rows := runSearch(t, Config{
+		StartURL:    srv.URL + "/",
+		SearchTerms: SplitTerms("<?php | <?= | fatal error"),
+		IgnoreCase:  true,
+	})
+
+	got := map[string]string{}
+	for _, r := range rows {
+		got[r[0]] = r[3]
+	}
+	want := map[string]string{
+		srv.URL + "/short": "<?=",
+		srv.URL + "/error": "fatal error",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("want %d matches, got %v", len(want), rows)
+	}
+	for url, term := range want {
+		if got[url] != term {
+			t.Errorf("%s: matched %q, want %q", url, got[url], term)
+		}
+	}
+}
+
+func TestSplitTerms(t *testing.T) {
+	got := SplitTerms(" <?php | <?= || Richmond, VA ")
+	want := []string{"<?php", "<?=", "Richmond, VA"}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("SplitTerms = %q, want %q", got, want)
+	}
+}

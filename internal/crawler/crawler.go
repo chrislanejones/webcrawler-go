@@ -103,7 +103,9 @@ type Config struct {
 	StartURL           string
 	AltEntryPoints     []string
 	Mode               SearchMode
-	SearchTarget       string
+	SearchTarget       string   // One term; used when SearchTerms is empty
+	SearchTerms        []string // Several terms, each reported on its own row
+	IgnoreCase         bool     // Match terms regardless of letter case
 	MaxConcurrency     int
 	ImageSizeThreshold int64
 	MaxRetries         int
@@ -592,7 +594,7 @@ func createCSV() {
 	}
 }
 
-func writeSearchResult(pageURL, contentType, foundIn string) {
+func writeSearchResult(pageURL, contentType, foundIn, term string) {
 	csvMu.Lock()
 	defer csvMu.Unlock()
 	atomic.AddInt64(&stats.MatchesFound, 1)
@@ -602,7 +604,7 @@ func writeSearchResult(pageURL, contentType, foundIn string) {
 
 	w := csv.NewWriter(f)
 	defer w.Flush()
-	w.Write([]string{pageURL, contentType, foundIn, config.SearchTarget, time.Now().Format(time.RFC3339)})
+	w.Write([]string{pageURL, contentType, foundIn, term, time.Now().Format(time.RFC3339)})
 }
 
 // writeNotSearched records a page the search could not read, so a results
@@ -616,7 +618,7 @@ func writeNotSearched(pageURL, contentType, reason string) {
 
 	w := csv.NewWriter(f)
 	defer w.Flush()
-	w.Write([]string{pageURL, contentType, "NOT SEARCHED: " + reason, config.SearchTarget, time.Now().Format(time.RFC3339)})
+	w.Write([]string{pageURL, contentType, "NOT SEARCHED: " + reason, strings.Join(searchTerms(), " | "), time.Now().Format(time.RFC3339)})
 }
 
 func writeBrokenLink(brokenURL, foundOnPage string, statusCode int, errMsg string) {
@@ -924,10 +926,51 @@ func processSearchMode(link, contentType string, bodyBytes []byte) {
 		return
 	}
 
-	if strings.Contains(text, config.SearchTarget) {
-		fmt.Printf("\n✅ MATCH FOUND IN %s: %s\n", kind, link)
-		writeSearchResult(link, contentType, kind)
+	for _, term := range matchedTerms(text) {
+		fmt.Printf("\n✅ MATCH FOUND IN %s: %s (%s)\n", kind, link, term)
+		writeSearchResult(link, contentType, kind, term)
 	}
+}
+
+// searchTerms returns the terms this crawl looks for.
+func searchTerms() []string {
+	if len(config.SearchTerms) > 0 {
+		return config.SearchTerms
+	}
+	if config.SearchTarget != "" {
+		return []string{config.SearchTarget}
+	}
+	return nil
+}
+
+// matchedTerms returns the search terms found in text, in the order given.
+func matchedTerms(text string) []string {
+	if config.IgnoreCase {
+		text = strings.ToLower(text)
+	}
+	var found []string
+	for _, term := range searchTerms() {
+		needle := term
+		if config.IgnoreCase {
+			needle = strings.ToLower(term)
+		}
+		if strings.Contains(text, needle) {
+			found = append(found, term)
+		}
+	}
+	return found
+}
+
+// SplitTerms turns "a | b | c" into its terms. A bar separates them because
+// commas turn up inside ordinary phrases ("Richmond, VA") and bars rarely do.
+func SplitTerms(s string) []string {
+	var terms []string
+	for _, part := range strings.Split(s, "|") {
+		if p := strings.TrimSpace(part); p != "" {
+			terms = append(terms, p)
+		}
+	}
+	return terms
 }
 
 func extractAndCheckLinks(body []byte, pageURL string) {

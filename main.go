@@ -165,6 +165,7 @@ func main() {
 
 	// Step 3: Get additional input based on mode
 	var searchTarget string
+	matchCase := true
 	var imageSizeThreshold int64 = 500
 	var captureFormat crawler.CaptureFormat = crawler.CaptureBoth
 	var sitemapOptions crawler.SitemapOptions
@@ -176,14 +177,20 @@ func main() {
 			huh.NewGroup(
 				huh.NewInput().
 					Title("Enter the link to search for").
+					Description("Separate several links with |").
 					Placeholder("https://example.com/page").
 					Value(&searchTarget).
 					Validate(func(s string) error {
-						if strings.TrimSpace(s) == "" {
+						if len(crawler.SplitTerms(s)) == 0 {
 							return fmt.Errorf("link cannot be empty")
 						}
 						return nil
 					}),
+				huh.NewConfirm().
+					Title("Match letter case?").
+					Affirmative("Yes").
+					Negative("No").
+					Value(&matchCase),
 			),
 		)
 
@@ -198,14 +205,20 @@ func main() {
 			huh.NewGroup(
 				huh.NewInput().
 					Title("Enter the word or phrase to search for").
+					Description("Separate several terms with |, e.g. <?php | <?= | Fatal error").
 					Placeholder("search term").
 					Value(&searchTarget).
 					Validate(func(s string) error {
-						if strings.TrimSpace(s) == "" {
+						if len(crawler.SplitTerms(s)) == 0 {
 							return fmt.Errorf("search term cannot be empty")
 						}
 						return nil
 					}),
+				huh.NewConfirm().
+					Title("Match letter case?").
+					Affirmative("Yes").
+					Negative("No").
+					Value(&matchCase),
 			),
 		)
 
@@ -493,6 +506,8 @@ func main() {
 		AltEntryPoints:     altEntryPoints,
 		Mode:               mode,
 		SearchTarget:       searchTarget,
+		SearchTerms:        crawler.SplitTerms(searchTarget),
+		IgnoreCase:         !matchCase,
 		MaxConcurrency:     concurrency,
 		ImageSizeThreshold: imageSizeThreshold * 1024,
 		MaxRetries:         maxRetries,
@@ -514,6 +529,9 @@ func main() {
 	}
 	if searchTarget != "" {
 		fmt.Printf("│  🎯 Search for:   %-35s │\n", truncateString(searchTarget, 35))
+		if !matchCase {
+			fmt.Printf("│  🔠 Match case:   %-35s │\n", "No")
+		}
 	}
 	fmt.Printf("│  ⚡ Concurrency:  %-35d │\n", concurrency)
 	fmt.Printf("│  🔄 Max retries:  %-35d │\n", maxRetries)
