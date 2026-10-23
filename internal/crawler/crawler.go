@@ -326,13 +326,37 @@ func Start(cfg Config) {
 		}
 	}
 
+	reportUnsearched()
+
 	stopStats <- true
 	printFinalStats()
 }
 
+func isSearchMode() bool {
+	return config.Mode == ModeSearchLink || config.Mode == ModeSearchWord
+}
+
+// reportUnsearched writes a NOT SEARCHED row for every page still blocked
+// after the retry passes. Without these rows, a page the server refused looks
+// the same in the results as a page that was read and did not match.
+func reportUnsearched() {
+	if !isSearchMode() {
+		return
+	}
+	blockedQueue.Range(func(key, value any) bool {
+		page := value.(*BlockedPage)
+		reason := "blocked by the server"
+		if page.LastError != "" {
+			reason += " (" + page.LastError + ")"
+		}
+		writeNotSearched(key.(string), "", reason)
+		return true
+	})
+}
+
 func countBlockedQueue() int {
 	count := 0
-	blockedQueue.Range(func(key, value interface{}) bool {
+	blockedQueue.Range(func(key, value any) bool {
 		count++
 		return true
 	})
@@ -340,7 +364,7 @@ func countBlockedQueue() int {
 }
 
 func retryBlockedPages() {
-	blockedQueue.Range(func(key, value interface{}) bool {
+	blockedQueue.Range(func(key, value any) bool {
 		pageURL := key.(string)
 		page := value.(*BlockedPage)
 
@@ -682,7 +706,17 @@ func fetchWithRetry(link string) {
 
 	if lastErr != nil {
 		atomic.AddInt64(&stats.ErrorCount, 1)
+		// A missing page has nothing to search. Anything else that failed
+		// every retry, a timeout or a 500, is a page that went unread.
+		if isSearchMode() && !isMissingPage(lastErr) {
+			writeNotSearched(link, "", lastErr.Error())
+		}
 	}
+}
+
+func isMissingPage(err error) bool {
+	s := err.Error()
+	return s == "status 404" || s == "status 410"
 }
 
 func fetchPage(link string, attempt int) (success bool, blocked bool, err error) {

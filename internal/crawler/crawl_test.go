@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -168,5 +169,36 @@ func TestInPathFilter(t *testing.T) {
 		if got := inPathFilter(p); got != want {
 			t.Errorf("inPathFilter(%q) = %v, want %v", p, got, want)
 		}
+	}
+}
+
+func TestUnreadPagesAreReportedNotSearched(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			fmt.Fprint(w, `<html><body><a href="/waf">waf</a><a href="/broken">500</a><a href="/gone">404</a></body></html>`)
+		case "/waf":
+			w.WriteHeader(http.StatusForbidden)
+		case "/broken":
+			w.WriteHeader(http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	rows := runSearch(t, Config{StartURL: srv.URL + "/", SearchTarget: "<?php", MaxRetries: 1})
+
+	got := map[string]string{}
+	for _, r := range rows {
+		got[r[0]] = r[2]
+	}
+	for _, path := range []string{"/waf", "/broken"} {
+		if !strings.HasPrefix(got[srv.URL+path], "NOT SEARCHED") {
+			t.Errorf("%s: want a NOT SEARCHED row, got %q", path, got[srv.URL+path])
+		}
+	}
+	if _, ok := got[srv.URL+"/gone"]; ok {
+		t.Error("a 404 has nothing to search and should not be reported")
 	}
 }
