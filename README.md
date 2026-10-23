@@ -1,7 +1,7 @@
 # 🕷️ Web Crawler - Cloudflare Buster Edition
 
 ![Golang Web Crawler Banner with Spider](Golang-Web-Crawler-Banner.jpg)
-A Go web crawler with an interactive terminal wizard. It works on sites behind bot protection, and it reads HTML, PDF, and DOCX content rather than just HTML.
+A Go web crawler with an interactive terminal wizard and a command line for scripted runs. It works on sites behind bot protection, and it reads HTML, PDF, and DOCX content rather than just HTML.
 
 ![Go Version](https://img.shields.io/badge/Go-1.26+-00ADD8?style=flat&logo=go)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
@@ -21,6 +21,26 @@ A Go web crawler with an interactive terminal wizard. It works on sites behind b
 | **📄 Page Capture**      | Generate PDFs, screenshots, or CMYK files for every page on the site       |
 | **🗺️ XML Sitemap**       | Generate a standards-compliant XML sitemap by crawling the entire site     |
 | **📡 JSON Feed Capture** | Capture pages listed in a JSON feed, for sites that build listings in JS   |
+
+### 🔎 What Gets Searched
+
+Find Link and Find Word read every page, PDF and Word file the crawl reaches:
+
+| Content  | What is searched                                                               |
+| -------- | ------------------------------------------------------------------------------ |
+| **HTML** | The raw page source, so markup like `<?php` or an inline script counts          |
+| **PDF**  | The text on every page, plus the URL behind every link                          |
+| **DOCX** | Body, headers, footers, footnotes and comments, plus the URL behind every link |
+
+Search for several terms in one crawl by separating them with `|`:
+
+```
+<?php | <?= | .php</b> on line
+```
+
+Each term found on a page gets its own row in the results. Turn off **Match letter case** to catch `<?PHP` and `<?php` with the same term.
+
+A page the crawler could not read is listed as `NOT SEARCHED` with the reason, so a page with no row in the results was read and did not match.
 
 ### 🌲 Path Filtering (Crawl Subsections)
 
@@ -107,11 +127,12 @@ The crawler employs multiple techniques to handle bot protection:
 - **HTTP/2**: Negotiates HTTP/2 like a real browser. A client that sends a Chrome user agent and then speaks HTTP/1.1 is a mismatch CDNs use to spot bots
 - **Full browser headers**: Sends the `Sec-Fetch-*` set alongside `Accept` and `Accept-Language`, so requests match the browser they claim to be
 - **Alternative Entry Points**: Automatically tests 17+ common pages (`/about`, `/contact`, `/sitemap.xml`, etc.) when the main page is blocked
-- **Custom Entry Point**: Specify your own "back door" URL
+- **Custom Entry Point**: Specify your own "back door" URL, in the wizard or with `-entry`
 - **Multi-Phase Crawling**: Start from working pages, then retry blocked pages with established session cookies
 - **User Agent Rotation**: Cycles through 5 different browser signatures
 - **Session Persistence**: Maintains cookies across requests
-- **Exponential Backoff**: Smart retry delays to avoid rate limiting
+- **One Shared Rate Limit**: 5 requests a second by default across every worker, so raising concurrency overlaps slow pages without hitting the site harder
+- **Retry-After**: When a server answers 429 or 503 and says how long to wait, the whole crawl waits that long, up to 2 minutes
 
 ### 📊 Comprehensive Statistics
 
@@ -132,7 +153,6 @@ Real-time and final statistics include:
 ### Prerequisites
 
 - Go 1.26 or higher
-- `pdfcpu` CLI tool (for PDF text extraction)
 - Chrome or Chromium (for page capture mode)
 - Ghostscript (optional, for CMYK PDF output)
 - ImageMagick (optional, for CMYK TIFF output)
@@ -147,10 +167,6 @@ cd webcrawler-go
 
 # Install dependencies
 go mod tidy
-
-# Install pdfcpu for PDF support
-go install github.com/pdfcpu/pdfcpu/cmd/pdfcpu@latest
-export PATH=$PATH:$(go env GOPATH)/bin
 
 # Install Chrome/Chromium (required for page capture mode)
 # Ubuntu/Debian:
@@ -172,7 +188,16 @@ sudo apt install imagemagick
 go run .
 ```
 
-The interactive wizard will guide you through the configuration.
+With no arguments, the interactive wizard walks you through the settings.
+
+Give it flags and it runs straight through, which is what you want for a list of sites or a scheduled job:
+
+```bash
+go run . -url https://www.example.gov/ -mode word \
+  -terms '<?php | <?= | .php</b> on line' -ignore-case -max-time 30m
+```
+
+Run `go run . -h` for every flag, or see **Command Line** below.
 
 ---
 
@@ -183,7 +208,7 @@ The interactive wizard will guide you through the configuration.
 ```
 ╔═══════════════════════════════════════════════════════════════════╗
 ║                   🕷️  Web Crawler Wizard  🕷️                       ║
-║                              v2.5                                 ║
+║                              v3.0                                 ║
 ╚═══════════════════════════════════════════════════════════════════╝
 
 🌐 What site do you want to check?
@@ -213,7 +238,45 @@ The interactive wizard will guide you through the configuration.
 ⚡ Max concurrent requests (default 5, max 20): 10
 
 🔄 Max retries per page (default 3): 3
+
+🐢 Requests per second (default 5): 5
 ```
+
+### ⌨️ Command Line
+
+Every wizard setting has a flag with the same default.
+
+| Flag             | Default       | What it does                                                    |
+| ---------------- | ------------- | --------------------------------------------------------------- |
+| `-url`           | (required)    | Site to crawl. `example.gov` works; `https://` is added         |
+| `-mode`          | `word`        | `link`, `word`, `broken`, `images`, `capture`, `sitemap`, `feed` |
+| `-terms`         |               | What to search for in `link` and `word` mode. Separate with `\|` |
+| `-ignore-case`   | off           | Match terms regardless of letter case                           |
+| `-path`          |               | Only crawl pages under this path, e.g. `/newsroom/`             |
+| `-entry`         |               | Start from this page instead of the homepage. May repeat        |
+| `-concurrency`   | `5`           | Requests in flight at once, at most 20                          |
+| `-rate`          | `5`           | Requests per second, shared by all workers. `0` for no limit    |
+| `-retries`       | `3`           | Retries per page                                                |
+| `-ignore-query`  | off           | Treat `page.html?a=1` and `page.html?b=2` as the same page      |
+| `-max-pages`     | `0`           | Stop after this many pages. `0` for no limit                    |
+| `-max-time`      | `0`           | Stop after this long, e.g. `30m`. `0` for no limit              |
+| `-out`           | current folder | Folder for the results CSV                                     |
+| `-threshold-kb`  | `500`         | `images` mode: flag images larger than this                     |
+| `-format`        | `both`        | `capture` and `feed` mode: `pdf`, `images`, `both`, `cmyk-pdf`, `cmyk-tiff` |
+| `-feed`, `-tag`  |               | `feed` mode: the JSON feed URL, and an optional tag filter      |
+| `-sitemap-file`, `-changefreq`, `-priority`, `-lastmod` | | `sitemap` mode options                 |
+
+Check a list of sites, eight at a time, each in its own folder:
+
+```bash
+xargs -P 8 -I{} webcrawler -url {} -mode word -terms '<?php' -max-time 25m -out results/{} < sites.txt
+```
+
+### ⏹️ Stopping Early
+
+Press **Ctrl-C**, or set `-max-time` or `-max-pages`, and the crawl stops taking on new pages, lets the requests already out finish, and still writes the results file and the final statistics, with a line saying why it stopped. Press Ctrl-C a second time to quit at once.
+
+This covers Find Link, Find Word, Broken Links and Oversized Images. Page Capture keeps its own `c` + Enter.
 
 ### Path Filtering Example
 
@@ -492,7 +555,10 @@ Results are saved to timestamped CSV files:
 URL,ContentType,FoundIn,Target,Timestamp
 https://example.com/page1,text/html,HTML,privacy policy,2024-01-15T14:32:45Z
 https://example.com/docs/terms.pdf,application/pdf,PDF,privacy policy,2024-01-15T14:33:12Z
+https://example.com/members,,NOT SEARCHED: blocked by the server (blocked: 403),privacy policy,2024-01-15T14:33:40Z
 ```
+
+`Target` is the term that matched. A `FoundIn` that starts with `NOT SEARCHED` is a page the crawler could not read: still blocked after the retry passes, failed every retry, or a PDF or Word file that would not parse. A 404 is not listed, since there is nothing there to search.
 
 **Broken Links Mode:**
 
@@ -540,12 +606,15 @@ An XML file is generated (e.g., `sitemap.xml`) containing all discovered URLs wi
 | Option               | Default | Description                                              |
 | -------------------- | ------- | -------------------------------------------------------- |
 | Concurrency          | 5       | Number of concurrent requests (max 20)                   |
+| Requests per Second  | 5       | One limit shared by every worker                         |
 | Max Retries          | 3       | Retry attempts per page on failure                       |
 | Retry Delay          | 2s      | Base delay between retries (increases exponentially)     |
 | Blocked Retry Passes | 3       | Number of passes to retry blocked pages                  |
 | Image Size Threshold | 500KB   | Threshold for oversized image detection                  |
 | Path Filter          | (none)  | Only crawl URLs starting with this path (e.g., `/blog/`) |
 | Ignore Query Params  | No      | Treat URLs with different query strings as the same page |
+| Match Letter Case    | Yes     | Find Link and Find Word compare terms exactly            |
+| Max Pages / Max Time | none    | Stop early, keeping what was found (`-max-pages`, `-max-time`) |
 | Page Timeout         | 180s    | Max time to wait for a page to render (Page Capture)     |
 
 ### Ignore Query Parameters
@@ -585,7 +654,7 @@ When **Ignore Query Params** is enabled, the crawler treats all of these as the 
 | ⏱️   | Timeout            | Server not responding                |
 | 🚫   | Connection Refused | Server actively refusing connections |
 | 🌐   | DNS Error          | Domain not found                     |
-| 🔒   | SSL/TLS Error      | Certificate validation failed        |
+| 🔒   | SSL/TLS Error      | Certificate failed verification. The host is listed in the final report with the reason, and the crawl carries on |
 
 ### HTTP Status Codes
 
@@ -594,20 +663,15 @@ When **Ignore Query Params** is enabled, the crawler treats all of these as the 
 | 200-299 | Success - content processed                |
 | 300-399 | Redirects followed (up to 10)              |
 | 403/503 | Bot protection detected - queued for retry |
-| 429     | Rate limited - backed off and retried      |
+| 429     | Rate limited - honors Retry-After, retried |
 | 404     | Not found - logged as error                |
 | 5xx     | Server error - retried                     |
 
 ### Bot Protection Detection
 
-Automatically identifies:
+A page counts as a challenge when it carries the wording of one, in combination: "Just a moment" with "enable JavaScript", "Attention Required" with "Cloudflare", "verify you are human" with a captcha, and the like.
 
-- Cloudflare ("Checking your browser...", "Ray ID")
-- Incapsula/Imperva
-- PerimeterX
-- Sucuri
-- Generic CAPTCHA challenges
-- DDoS protection pages
+It does not go by vendor names alone. Plenty of ordinary pages load fonts from `cdnjs.cloudflare.com` or carry a reCAPTCHA contact form, and treating those as challenges ended crawls at the homepage.
 
 ---
 
@@ -615,32 +679,25 @@ Automatically identifies:
 
 ```
 webcrawler/
-├── main.go                      # Interactive wizard & entry point
+├── cli.go                       # Entry point and command-line flags
+├── main.go                      # Interactive wizard
 ├── go.mod                       # Go module definition
 ├── go.sum                       # Dependency checksums
-├── assets/
-│   └── tmp/                     # Temporary files for PDF processing
 └── internal/
     ├── crawler/
     │   ├── crawler.go           # Core crawling logic & statistics
+    │   ├── pace.go              # Shared rate limit and Retry-After
     │   ├── jsonfeed.go          # JSON feed reader & capture
     │   ├── pdfcapture.go        # Page capture with Chrome/PDF/CMYK
     │   └── sitemap.go           # XML sitemap generation
     └── parser/
-        ├── docx.go              # Word document parser
-        └── pdf.go               # PDF text extractor
+        ├── docx.go              # Word text and hyperlinks
+        └── pdf.go               # PDF text and link annotations
 ```
 
 ---
 
 ## 🔧 Troubleshooting
-
-### "pdfcpu: command not found"
-
-```bash
-go install github.com/pdfcpu/pdfcpu/cmd/pdfcpu@latest
-export PATH=$PATH:$(go env GOPATH)/bin
-```
 
 ### "google-chrome: executable file not found" (Page Capture Mode)
 
@@ -701,14 +758,21 @@ This happens when the page body is loaded via JavaScript/AJAX after the initial 
 
 ### Rate limiting (429 errors)
 
-The crawler automatically backs off, but you can:
+The crawler waits out any `Retry-After` the server sends. If the 429s keep coming:
 
+- Lower the rate: `-rate 2`, or the **Requests per second** prompt in the wizard
 - Reduce concurrency
-- Increase the built-in delay (edit `time.Sleep(50 * time.Millisecond)` in `crawler.go`)
 
 ### SSL certificate errors
 
-The crawler skips certificate verification by default (`InsecureSkipVerify: true`). This handles self-signed certs but be aware of the security implications.
+Certificates are verified. When a host's certificate fails (an incomplete chain is the common one on government sites, a wrong host name or an expired certificate are the others), the crawler prints one warning, keeps going without verification for that host, and lists it in the final report:
+
+```
+🔒 TLS: 1 host(s) failed certificate verification and were read without it:
+      vdem.virginia.gov: certificate chain is incomplete or not trusted
+```
+
+That list is a finding worth passing on to whoever runs the site.
 
 ### Empty sitemap generated
 
@@ -734,10 +798,13 @@ go test -race ./...
 gofmt -l . && go vet ./... && go build ./... && go test ./...
 ```
 
-Tests cover the broken-link classification against a local server that
-imitates the awkward cases: a CDN that rejects `HEAD`, one that answers
-`HEAD` with 404 but `GET` with 200, firewall 403s, rate limits and real
-404s. CI runs gofmt, vet, build, tests and `govulncheck` on every push.
+Tests run real crawls against local servers that imitate the awkward cases:
+a CDN that rejects `HEAD`, one that answers `HEAD` with 404 but `GET` with
+200, firewall 403s, rate limits, skip links and fragments, a start page that
+redirects to another host, the path filter, page and time limits, and
+self-signed certificates. The parsers are tested on Word files with sentences
+split across runs, and on PDFs with link annotations and malformed input.
+CI runs gofmt, vet, build, tests and `govulncheck` on every push.
 
 ---
 
@@ -763,11 +830,12 @@ GOOS=darwin GOARCH=amd64 go build -o webcrawler-mac .
 
 | Package                                                              | Version  | Used for                            |
 | -------------------------------------------------------------------- | -------- | ----------------------------------- |
-| [golang.org/x/net](https://pkg.go.dev/golang.org/x/net)              | v0.58.0  | HTML parsing                        |
+| [golang.org/x/net](https://pkg.go.dev/golang.org/x/net)              | v0.61.0  | HTML parsing                        |
 | [chromedp](https://github.com/chromedp/chromedp)                     | v0.16.0  | Chrome DevTools Protocol, capture   |
 | [huh](https://github.com/charmbracelet/huh)                          | v1.0.0   | Terminal wizard forms               |
-| [baliance.com/gooxml](https://github.com/baliance/gooxml)            | v1.0.1   | DOCX parsing                        |
-| [pdfcpu](https://github.com/pdfcpu/pdfcpu)                           | latest   | PDF text extraction (external CLI)  |
+| [ledongthuc/pdf](https://github.com/ledongthuc/pdf)                  | 6c8c28e0 | PDF text and link extraction        |
+
+Word files are read with the standard library, so there is nothing to install for PDF or DOCX search.
 
 ---
 

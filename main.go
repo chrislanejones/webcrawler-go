@@ -20,7 +20,7 @@ func runWizard(ctx context.Context) {
 	fmt.Println()
 	fmt.Println("╔═══════════════════════════════════════════════════════════════════╗")
 	fmt.Println("║                   🕷️  Web Crawler Wizard  🕷️                      ║")
-	fmt.Println("║                              v2.5                                 ║")
+	fmt.Println("║                              v3.0                                 ║")
 	fmt.Println("╚═══════════════════════════════════════════════════════════════════╝")
 	fmt.Println()
 
