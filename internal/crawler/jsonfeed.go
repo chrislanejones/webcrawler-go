@@ -1,10 +1,8 @@
 package crawler
 
 import (
-	"encoding/csv"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -47,7 +45,7 @@ var (
 )
 
 // StartJSONFeedCapture fetches a JSON feed and captures all article pages
-func StartJSONFeedCapture(cfg Config) {
+func StartJSONFeedCapture(cfg Config) error {
 	jsonFeedStats = JSONFeedStats{}
 	jsonFeedStartTime = time.Now()
 	jsonFeedFormat = cfg.CaptureFormat
@@ -59,24 +57,26 @@ func StartJSONFeedCapture(cfg Config) {
 	var err error
 	jsonFeedBaseURL, err = url.Parse(cfg.StartURL)
 	if err != nil {
-		fmt.Printf("❌ Invalid base URL: %v\n", err)
-		return
+		return fmt.Errorf("invalid base URL: %w", err)
 	}
 
 	// Create output directory with timestamp
 	timestamp := time.Now().Format("2006-01-02_15-04-05")
 	jsonFeedOutputDir = fmt.Sprintf("json_feed_captures_%s", timestamp)
-	os.MkdirAll(jsonFeedOutputDir, 0755)
+	if err := os.MkdirAll(jsonFeedOutputDir, 0755); err != nil {
+		return fmt.Errorf("create capture folder: %w", err)
+	}
 
 	// Create CSV file for feed data
 	jsonFeedCSVFile = filepath.Join(jsonFeedOutputDir, "feed_items.csv")
-	createJSONFeedCSV()
+	if err := createJSONFeedCSV(); err != nil {
+		return err
+	}
 
 	jsonFeedSema = make(chan struct{}, cfg.MaxConcurrency)
 
 	if err := startCaptureBrowser(); err != nil {
-		fmt.Printf("❌ %v\n", err)
-		return
+		return fmt.Errorf("start capture browser: %w", err)
 	}
 	defer closeCaptureBrowser()
 
@@ -104,10 +104,9 @@ func StartJSONFeedCapture(cfg Config) {
 	// Fetch and parse the JSON feed
 	items, err := fetchJSONFeed(cfg.JSONFeedOpts.FeedURL, cfg.JSONFeedOpts)
 	if err != nil {
-		fmt.Printf("❌ Error fetching JSON feed: %v\n", err)
 		stopStats <- true
 		stopKeyListener <- true
-		return
+		return fmt.Errorf("fetch JSON feed: %w", err)
 	}
 
 	atomic.StoreInt64(&jsonFeedStats.ItemsFetched, int64(len(items)))
@@ -144,7 +143,10 @@ func StartJSONFeedCapture(cfg Config) {
 		itemURL := resolveURL(cfg.StartURL, item.Link)
 
 		// Write to CSV
-		writeJSONFeedCSV(item, itemURL)
+		if err := writeJSONFeedCSV(item, itemURL); err != nil {
+			failOutput(err)
+			break
+		}
 
 		// Capture the page
 		jsonFeedWg.Add(1)
@@ -164,29 +166,21 @@ func StartJSONFeedCapture(cfg Config) {
 	jsonFeedWg.Wait()
 	stopStats <- true
 	stopKeyListener <- true
+	if err := outputError(); err != nil {
+		return err
+	}
 	printJSONFeedFinalStats()
+	return nil
 }
 
-func createJSONFeedCSV() {
-	f, _ := os.Create(jsonFeedCSVFile)
-	defer f.Close()
-
-	w := csv.NewWriter(f)
-	defer w.Flush()
-	w.Write([]string{"Headline", "Link", "Date", "Brief", "Tags", "CapturedFile"})
+func createJSONFeedCSV() error {
+	return writeCSVRow(jsonFeedCSVFile, true, []string{"Headline", "Link", "Date", "Brief", "Tags", "CapturedFile"})
 }
 
-func writeJSONFeedCSV(item FeedItem, fullURL string) {
+func writeJSONFeedCSV(item FeedItem, fullURL string) error {
 	jsonFeedCSVMu.Lock()
 	defer jsonFeedCSVMu.Unlock()
-
-	f, _ := os.OpenFile(jsonFeedCSVFile, os.O_APPEND|os.O_WRONLY, 0644)
-	defer f.Close()
-
-	filename := sanitizeFilename(fullURL)
-	w := csv.NewWriter(f)
-	defer w.Flush()
-	w.Write([]string{item.Headline, fullURL, item.Date, item.Brief, item.Tags, filename})
+	return writeCSVRow(jsonFeedCSVFile, false, []string{item.Headline, fullURL, item.Date, item.Brief, item.Tags, sanitizeFilename(fullURL)})
 }
 
 func fetchJSONFeed(feedURL string, opts JSONFeedOptions) ([]FeedItem, error) {
@@ -216,7 +210,7 @@ func fetchJSONFeed(feedURL string, opts JSONFeedOptions) ([]FeedItem, error) {
 	}
 
 	// Go's http client automatically handles gzip decompression
-	body, err := io.ReadAll(resp.Body)
+	body, err := readResponseBody(resp, config.MaxBodyBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -392,6 +386,7 @@ func captureJSONFeedPage(pageURL string, item FeedItem) {
 	// Save files
 	if jsonFeedFormat == CapturePDFOnly || jsonFeedFormat == CaptureBoth {
 		if err := os.WriteFile(pdfPath, pdfBuf, 0644); err != nil {
+			failOutput(fmt.Errorf("save capture for %s: %w", pageURL, err))
 			atomic.AddInt64(&jsonFeedStats.Errors, 1)
 			return
 		}
@@ -401,11 +396,13 @@ func captureJSONFeedPage(pageURL string, item FeedItem) {
 	if jsonFeedFormat == CaptureCMYKPDF {
 		tempPdfPath := filepath.Join(jsonFeedOutputDir, filename+"_temp.pdf")
 		if err := os.WriteFile(tempPdfPath, pdfBuf, 0644); err != nil {
+			failOutput(fmt.Errorf("save capture for %s: %w", pageURL, err))
 			atomic.AddInt64(&jsonFeedStats.Errors, 1)
 			return
 		}
 		cmykPdfPath := filepath.Join(jsonFeedOutputDir, filename+"_cmyk.pdf")
 		if err := convertToCMYKPDF(tempPdfPath, cmykPdfPath); err != nil {
+			failOutput(fmt.Errorf("save capture for %s: %w", pageURL, err))
 			atomic.AddInt64(&jsonFeedStats.Errors, 1)
 			os.Remove(tempPdfPath)
 			return
@@ -416,6 +413,7 @@ func captureJSONFeedPage(pageURL string, item FeedItem) {
 
 	if jsonFeedFormat == CaptureImagesOnly || jsonFeedFormat == CaptureBoth {
 		if err := os.WriteFile(pngPath, pngBuf, 0644); err != nil {
+			failOutput(fmt.Errorf("save capture for %s: %w", pageURL, err))
 			atomic.AddInt64(&jsonFeedStats.Errors, 1)
 			return
 		}
@@ -425,11 +423,13 @@ func captureJSONFeedPage(pageURL string, item FeedItem) {
 	if jsonFeedFormat == CaptureCMYKTIFF {
 		tempPngPath := filepath.Join(jsonFeedOutputDir, filename+"_temp.png")
 		if err := os.WriteFile(tempPngPath, pngBuf, 0644); err != nil {
+			failOutput(fmt.Errorf("save capture for %s: %w", pageURL, err))
 			atomic.AddInt64(&jsonFeedStats.Errors, 1)
 			return
 		}
 		tiffPath := filepath.Join(jsonFeedOutputDir, filename+"_cmyk.tiff")
 		if err := convertToCMYKTIFF(tempPngPath, tiffPath); err != nil {
+			failOutput(fmt.Errorf("save capture for %s: %w", pageURL, err))
 			atomic.AddInt64(&jsonFeedStats.Errors, 1)
 			os.Remove(tempPngPath)
 			return

@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/csv"
 	"errors"
 	"fmt"
 	"io"
@@ -121,6 +120,7 @@ type Config struct {
 	PathFilter         string        // Only crawl URLs starting with this path (e.g., "/newsroom/")
 	IgnoreQueryParams  bool          // Treat URLs with different query params as the same page
 	RequestsPerSecond  float64       // Shared request ceiling; 0 means DefaultRequestsPerSecond, below 0 means none
+	MaxBodyBytes       int64         // Maximum decoded HTTP response size; 0 uses DefaultMaxBodyBytes
 	MaxPages           int           // Stop queuing pages after this many; 0 means no limit
 	MaxDuration        time.Duration // Stop queuing pages after this long; 0 means no limit
 	OutputDir          string        // Where the results CSV goes; empty means the working directory
@@ -334,9 +334,9 @@ func init() {
 	}
 }
 
-// Start runs a crawl to completion.
-func Start(cfg Config) {
-	StartContext(context.Background(), cfg)
+// Start runs a crawl to completion, returning startup and output failures.
+func Start(cfg Config) error {
+	return StartContext(context.Background(), cfg)
 }
 
 // StartContext runs a crawl that stops early when ctx is done, or when the
@@ -346,7 +346,16 @@ func Start(cfg Config) {
 //
 // The limits, early stop and request pacing apply to every mode. In Page
 // Capture and JSON Feed, c + Enter stops the run the same way Ctrl-C does.
-func StartContext(ctx context.Context, cfg Config) {
+// Startup, feed-fetch, and output failures return an error. Individual page
+// failures are crawl findings; graceful cancellation and limits return nil.
+func StartContext(ctx context.Context, cfg Config) error {
+	resetOutputError()
+	if cfg.MaxConcurrency < 1 {
+		return fmt.Errorf("concurrency must be at least 1")
+	}
+	if cfg.MaxBodyBytes < 0 {
+		return fmt.Errorf("maximum response size cannot be negative")
+	}
 	if cfg.MaxDuration > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, cfg.MaxDuration)
@@ -374,17 +383,15 @@ func StartContext(ctx context.Context, cfg Config) {
 	sema = make(chan struct{}, cfg.MaxConcurrency)
 
 	start, err := url.Parse(cfg.StartURL)
-	if err != nil {
-		fmt.Printf("❌ Invalid start URL: %v\n", err)
-		return
+	if err != nil || start.Host == "" || (start.Scheme != "http" && start.Scheme != "https") {
+		return fmt.Errorf("invalid start URL %q: expected an HTTP or HTTPS address", cfg.StartURL)
 	}
 	siteBase.Store(start)
 
 	timestamp := time.Now().Format("2006-01-02_15-04-05")
 	if cfg.OutputDir != "" {
 		if err := os.MkdirAll(cfg.OutputDir, 0o755); err != nil {
-			fmt.Printf("❌ Cannot create output folder: %v\n", err)
-			return
+			return fmt.Errorf("create output folder: %w", err)
 		}
 	}
 	switch cfg.Mode {
@@ -396,19 +403,20 @@ func StartContext(ctx context.Context, cfg Config) {
 		resultFile = filepath.Join(cfg.OutputDir, fmt.Sprintf("results-oversized-images-%s.csv", timestamp))
 	case ModePDFCapture:
 		// PDF capture uses its own output handling
-		StartPDFCapture(cfg)
-		return
+		return StartPDFCapture(cfg)
 	case ModeSitemap:
 		// Sitemap uses its own output handling
-		StartSitemapGeneration(cfg)
-		return
+		return StartSitemapGeneration(cfg)
 	case ModeJSONFeed:
 		// JSON feed uses its own output handling
-		StartJSONFeedCapture(cfg)
-		return
+		return StartJSONFeedCapture(cfg)
+	default:
+		return fmt.Errorf("unknown crawl mode %d", cfg.Mode)
 	}
 
-	createCSV()
+	if err := createCSV(); err != nil {
+		return err
+	}
 
 	stopStats := make(chan bool)
 	go printLiveStats(stopStats)
@@ -459,7 +467,11 @@ func StartContext(ctx context.Context, cfg Config) {
 	reportUnsearched()
 
 	stopStats <- true
+	if err := outputError(); err != nil {
+		return err
+	}
 	printFinalStats()
+	return nil
 }
 
 func isSearchMode() bool {
@@ -546,6 +558,9 @@ func retryBlockedPages() {
 			sema <- struct{}{}
 			defer func() { <-sema }()
 
+			if abandoning() {
+				return
+			}
 			fmt.Printf("   🔄 Retrying: %s\n", link)
 			time.Sleep(time.Duration(attemptNum) * time.Second)
 
@@ -739,90 +754,47 @@ func truncateString(s string, maxLen int) string {
 	return s[:maxLen-3] + "..."
 }
 
-func createCSV() {
-	f, _ := os.Create(resultFile)
-	defer f.Close()
-
-	w := csv.NewWriter(f)
-	defer w.Flush()
-
+func createCSV() error {
+	var header []string
 	switch config.Mode {
 	case ModeSearchLink, ModeSearchWord:
-		w.Write([]string{"URL", "ContentType", "FoundIn", "Target", "Timestamp"})
+		header = []string{"URL", "ContentType", "FoundIn", "Target", "Timestamp"}
 	case ModeBrokenLinks:
-		w.Write([]string{"Result", "URL", "FoundOnPage", "StatusCode", "Error", "Timestamp"})
+		header = []string{"Result", "URL", "FoundOnPage", "StatusCode", "Error", "Timestamp"}
 	case ModeOversizedImages:
-		w.Write([]string{"ImageURL", "FoundOnPage", "SizeKB", "ContentType", "Timestamp"})
+		header = []string{"ImageURL", "FoundOnPage", "SizeKB", "ContentType", "Timestamp"}
 	}
+	return writeCSVRow(resultFile, true, header)
 }
 
 func writeSearchResult(pageURL, contentType, foundIn, term string) {
-	csvMu.Lock()
-	defer csvMu.Unlock()
-	atomic.AddInt64(&stats.MatchesFound, 1)
-
-	f, _ := os.OpenFile(resultFile, os.O_APPEND|os.O_WRONLY, 0644)
-	defer f.Close()
-
-	w := csv.NewWriter(f)
-	defer w.Flush()
-	w.Write([]string{pageURL, contentType, foundIn, term, time.Now().Format(time.RFC3339)})
+	if appendResult([]string{pageURL, contentType, foundIn, term, time.Now().Format(time.RFC3339)}) {
+		atomic.AddInt64(&stats.MatchesFound, 1)
+	}
 }
 
-// writeNotSearched records a page the search could not read, so a results
-// file with no row for a URL means "searched, no match" and nothing else.
+// writeNotSearched records unread pages so absence of a match is not mistaken
+// for a successful search.
 func writeNotSearched(pageURL, contentType, reason string) {
-	csvMu.Lock()
-	defer csvMu.Unlock()
-
-	f, _ := os.OpenFile(resultFile, os.O_APPEND|os.O_WRONLY, 0644)
-	defer f.Close()
-
-	w := csv.NewWriter(f)
-	defer w.Flush()
-	w.Write([]string{pageURL, contentType, "NOT SEARCHED: " + reason, strings.Join(searchTerms(), " | "), time.Now().Format(time.RFC3339)})
+	appendResult([]string{pageURL, contentType, "NOT SEARCHED: " + reason, strings.Join(searchTerms(), " | "), time.Now().Format(time.RFC3339)})
 }
 
 func writeBrokenLink(brokenURL, foundOnPage string, statusCode int, errMsg string) {
-	csvMu.Lock()
-	defer csvMu.Unlock()
-	atomic.AddInt64(&stats.MatchesFound, 1)
-
-	f, _ := os.OpenFile(resultFile, os.O_APPEND|os.O_WRONLY, 0644)
-	defer f.Close()
-
-	w := csv.NewWriter(f)
-	defer w.Flush()
-	w.Write([]string{"BROKEN", brokenURL, foundOnPage, strconv.Itoa(statusCode), errMsg, time.Now().Format(time.RFC3339)})
+	if appendResult([]string{"BROKEN", brokenURL, foundOnPage, strconv.Itoa(statusCode), errMsg, time.Now().Format(time.RFC3339)}) {
+		atomic.AddInt64(&stats.MatchesFound, 1)
+	}
 }
 
-// writeBlockedLink records a link the crawler could not verify because the far
-// end refused the request. These are reported separately from broken links:
-// the page is probably fine, it just will not answer a script.
+// A refused request is unverified, not necessarily a broken link.
 func writeBlockedLink(blockedURL, foundOnPage string, statusCode int) {
-	csvMu.Lock()
-	defer csvMu.Unlock()
-
-	f, _ := os.OpenFile(resultFile, os.O_APPEND|os.O_WRONLY, 0644)
-	defer f.Close()
-
-	w := csv.NewWriter(f)
-	defer w.Flush()
-	w.Write([]string{"BLOCKED", blockedURL, foundOnPage, strconv.Itoa(statusCode),
+	appendResult([]string{"BLOCKED", blockedURL, foundOnPage, strconv.Itoa(statusCode),
 		"Refused by bot protection, verify in a browser", time.Now().Format(time.RFC3339)})
 }
 
 func writeOversizedImage(imageURL, foundOnPage string, sizeKB int64, contentType string) {
-	csvMu.Lock()
-	defer csvMu.Unlock()
-	atomic.AddInt64(&stats.MatchesFound, 1)
-
-	f, _ := os.OpenFile(resultFile, os.O_APPEND|os.O_WRONLY, 0644)
-	defer f.Close()
-
-	w := csv.NewWriter(f)
-	defer w.Flush()
-	w.Write([]string{imageURL, foundOnPage, strconv.FormatInt(sizeKB, 10), contentType, time.Now().Format(time.RFC3339)})
+	if appendResult([]string{imageURL, foundOnPage, strconv.FormatInt(sizeKB, 10), contentType, time.Now().Format(time.RFC3339)}) {
+		atomic.AddInt64(&stats.MatchesFound, 1)
+	}
 }
 
 func crawl(link string) {
@@ -920,6 +892,9 @@ func fetchWithRetry(link string) {
 		}
 
 		lastErr = err
+		if errors.Is(err, errBodyTooLarge) || outputError() != nil {
+			break
+		}
 
 		if err != nil {
 			errStr := err.Error()
@@ -997,7 +972,7 @@ func fetchPage(link string, attempt int) (success bool, blocked bool, err error)
 	contentType := resp.Header.Get("Content-Type")
 
 	// Go's http client automatically decompresses gzip when we don't set Accept-Encoding manually
-	bodyBytes, err := io.ReadAll(resp.Body)
+	bodyBytes, err := readResponseBody(resp, config.MaxBodyBytes)
 	if err != nil {
 		return false, false, err
 	}
@@ -1057,8 +1032,12 @@ func fetchPageForRetry(link string, retryAttempt int) bool {
 	adoptStartRedirect(link, resp)
 	contentType := resp.Header.Get("Content-Type")
 
-	bodyBytes, err := io.ReadAll(resp.Body)
+	bodyBytes, err := readResponseBody(resp, config.MaxBodyBytes)
 	if err != nil {
+		atomic.AddInt64(&stats.ErrorCount, 1)
+		if isSearchMode() {
+			writeNotSearched(link, contentType, err.Error())
+		}
 		return false
 	}
 

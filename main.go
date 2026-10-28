@@ -16,7 +16,7 @@ import (
 
 // runWizard asks for every setting interactively, then runs the crawl. It is
 // what the program does when started with no arguments.
-func runWizard(ctx context.Context) {
+func runWizard(ctx context.Context) error {
 	fmt.Println()
 	fmt.Println("╔═══════════════════════════════════════════════════════════════════╗")
 	fmt.Println("║                   🕷️  Web Crawler Wizard  🕷️                      ║")
@@ -567,12 +567,15 @@ func runWizard(ctx context.Context) {
 	fmt.Println("🚀 LAUNCHING CRAWLER...")
 	fmt.Println()
 
-	crawler.StartContext(ctx, config)
+	if err := crawler.StartContext(ctx, config); err != nil {
+		return err
+	}
 
 	fmt.Println()
 	fmt.Println("════════════════════════════════════════════════════════════════════")
 	fmt.Println("🎉 Crawl complete! Check the results CSV file for details.")
 	fmt.Println("════════════════════════════════════════════════════════════════════")
+	return nil
 }
 
 func suggestAndTestAlternatives(siteURL string) []string {

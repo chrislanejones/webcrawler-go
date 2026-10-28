@@ -165,8 +165,8 @@ git clone https://github.com/chrislanejones/webcrawler-go.git
 # or: git clone https://codeberg.org/chrislanejones/webcrawler-go.git
 cd webcrawler-go
 
-# Install dependencies
-go mod tidy
+# Download dependencies
+go mod download
 
 # Install Chrome/Chromium (required for page capture mode)
 # Ubuntu/Debian:
@@ -198,6 +198,20 @@ go run . -url https://www.example.gov/ -mode word \
 ```
 
 Run `go run . -h` for every flag, or see **Command Line** below.
+
+To build and run a reusable executable:
+
+```bash
+go build -o webcrawler .
+./webcrawler
+```
+
+For a bounded broken-link scan, saving the CSV in `./results`:
+
+```bash
+./webcrawler -url https://example.com -mode broken \
+  -max-pages 100 -max-time 5m -out ./results
+```
 
 ---
 
@@ -258,6 +272,7 @@ Every wizard setting has a flag with the same default.
 | `-rate`          | `5`           | Requests per second, shared by all workers. `0` for no limit    |
 | `-retries`       | `3`           | Retries per page                                                |
 | `-ignore-query`  | off           | Treat `page.html?a=1` and `page.html?b=2` as the same page      |
+| `-max-body-mb`   | `32`          | Maximum decoded HTTP response size in MiB; must be positive    |
 | `-max-pages`     | `0`           | Stop after this many pages. `0` for no limit                    |
 | `-max-time`      | `0`           | Stop after this long, e.g. `30m`. `0` for no limit              |
 | `-out`           | current folder | Folder for the results CSV                                     |
@@ -271,6 +286,28 @@ Check a list of sites, eight at a time, each in its own folder:
 ```bash
 xargs -P 8 -I{} webcrawler -url {} -mode word -terms '<?php' -max-time 25m -out results/{} < sites.txt
 ```
+
+### Response size limits and failures
+
+HTTP page, PDF/DOCX document, sitemap-page, and JSON feed downloads are limited to **32 MiB per response**, including after gzip decompression. Larger search documents are recorded as `NOT SEARCHED` with the reason and are not retried. A partial document is never searched. Sitemap pages that exceed the limit are omitted with an error; an oversized JSON feed fails the run.
+
+Raise the limit for sites with large documents:
+
+```bash
+go run . -url https://example.com -mode word -terms "privacy" -max-body-mb 64
+```
+
+The wizard uses the same 32 MiB default. This limits HTTP bodies buffered in memory; it does not cap Chrome's page rendering, generated captures, document-parser memory, or image measurements streamed without buffering.
+
+CSV creation, writing, flushing, and closing errors are checked. Output failures stop new work, let active workers finish, and report an error while retaining files already saved. Capture output and sitemap write failures are also reported.
+
+Exit codes for the built executable:
+
+- **0:** Completed, or stopped gracefully by a page/time limit or the user.
+- **1:** Startup, feed-fetch, or output failure.
+- **2:** Invalid command-line arguments.
+
+Individual crawl findings such as broken links, blocked pages, or oversized documents remain in the results/statistics and do not by themselves produce a nonzero exit code. `go run` may wrap the executable's exit code; use `go build -o webcrawler .` and `./webcrawler` when a script needs the exact code.
 
 ### ⏹️ Stopping Early
 
@@ -558,7 +595,7 @@ https://example.com/docs/terms.pdf,application/pdf,PDF,privacy policy,2024-01-15
 https://example.com/members,,NOT SEARCHED: blocked by the server (blocked: 403),privacy policy,2024-01-15T14:33:40Z
 ```
 
-`Target` is the term that matched. A `FoundIn` that starts with `NOT SEARCHED` is a page the crawler could not read: still blocked after the retry passes, failed every retry, or a PDF or Word file that would not parse. A 404 is not listed, since there is nothing there to search.
+`Target` is the term that matched. A `FoundIn` that starts with `NOT SEARCHED` is a page the crawler could not read: still blocked after the retry passes, failed every retry, exceeded the response size limit, or a PDF or Word file that would not parse. A 404 is not listed, since there is nothing there to search.
 
 **Broken Links Mode:**
 
@@ -615,6 +652,7 @@ An XML file is generated (e.g., `sitemap.xml`) containing all discovered URLs wi
 | Ignore Query Params  | No      | Treat URLs with different query strings as the same page |
 | Match Letter Case    | Yes     | Find Link and Find Word compare terms exactly            |
 | Max Pages / Max Time | none    | Stop early, keeping what was found (`-max-pages`, `-max-time`) |
+| Max Response Size   | 32 MiB  | Decoded HTTP body limit (`-max-body-mb`); excludes Chrome rendering |
 | Page Timeout         | 180s    | Max time to wait for a page to render (Page Capture)     |
 
 ### Ignore Query Parameters
@@ -685,8 +723,10 @@ webcrawler/
 ├── go.sum                       # Dependency checksums
 └── internal/
     ├── crawler/
+    │   ├── body.go              # Bounded HTTP response reading
     │   ├── chrome.go            # One shared browser, page rendering
     │   ├── crawler.go           # Core crawling logic & statistics
+    │   ├── output.go            # Checked CSV writes and output failure handling
     │   ├── pace.go              # Shared rate limit and Retry-After
     │   ├── jsonfeed.go          # JSON feed reader & capture
     │   ├── pdfcapture.go        # Page capture with Chrome/PDF/CMYK
@@ -699,6 +739,14 @@ webcrawler/
 ---
 
 ## 🔧 Troubleshooting
+
+### "response body exceeds size limit"
+
+The decoded response exceeded the default 32 MiB limit. Search results mark the page `NOT SEARCHED`; truncated content is never parsed. If you need to read larger documents, rerun with `-max-body-mb 64` or another positive limit. Higher limits increase memory use per concurrent request.
+
+### "open CSV", "write CSV", or "write sitemap"
+
+Check that the output path is writable and the disk has free space. These failures return exit code 1. Files saved before the failure remain available, but the run is incomplete; fix the output problem and rerun.
 
 ### "google-chrome: executable file not found" (Page Capture Mode)
 

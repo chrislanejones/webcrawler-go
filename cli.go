@@ -27,7 +27,10 @@ func main() {
 	}()
 
 	if len(os.Args) == 1 {
-		runWizard(ctx)
+		if err := runWizard(ctx); err != nil {
+			fmt.Fprintln(os.Stderr, "webcrawler:", err)
+			os.Exit(1)
+		}
 		return
 	}
 
@@ -39,7 +42,10 @@ func main() {
 		fmt.Fprintln(os.Stderr, "webcrawler:", err)
 		os.Exit(2)
 	}
-	crawler.StartContext(ctx, cfg)
+	if err := crawler.StartContext(ctx, cfg); err != nil {
+		fmt.Fprintln(os.Stderr, "webcrawler:", err)
+		os.Exit(1)
+	}
 }
 
 // modeNames maps the -mode flag to a crawl mode.
@@ -106,6 +112,7 @@ func parseFlags(args []string, errOut io.Writer) (crawler.Config, error) {
 		retries     = fs.Int("retries", 3, "retries per page")
 		rate        = fs.Float64("rate", crawler.DefaultRequestsPerSecond, "requests per second, shared by all workers; 0 for no limit")
 		ignoreQuery = fs.Bool("ignore-query", false, "treat page.html?a=1 and page.html?b=2 as the same page")
+		maxBodyMB   = fs.Int64("max-body-mb", crawler.DefaultMaxBodyBytes>>20, "maximum decoded HTTP response size in MiB (must be positive)")
 		maxPages    = fs.Int("max-pages", 0, "stop after this many pages; 0 for no limit")
 		maxTime     = fs.Duration("max-time", 0, "stop after this long, e.g. 30m; 0 for no limit")
 		out         = fs.String("out", "", "folder for the results CSV (default: current folder)")
@@ -126,6 +133,10 @@ func parseFlags(args []string, errOut io.Writer) (crawler.Config, error) {
 	}
 	if fs.NArg() > 0 {
 		return crawler.Config{}, fmt.Errorf("unexpected argument %q (every setting is a flag, like -url)", fs.Arg(0))
+	}
+
+	if *maxBodyMB <= 0 || *maxBodyMB > (1<<63-1)/(1<<20) {
+		return crawler.Config{}, fmt.Errorf("-max-body-mb must be a positive size that fits in int64 bytes")
 	}
 
 	start, err := normalizeSite(*site)
@@ -155,6 +166,7 @@ func parseFlags(args []string, errOut io.Writer) (crawler.Config, error) {
 		IgnoreQueryParams:  *ignoreQuery,
 		RequestsPerSecond:  *rate,
 		MaxPages:           *maxPages,
+		MaxBodyBytes:       *maxBodyMB << 20,
 		MaxDuration:        *maxTime,
 		OutputDir:          *out,
 		IgnoreCase:         *ignoreCase,

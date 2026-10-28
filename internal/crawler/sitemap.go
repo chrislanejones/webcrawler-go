@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/xml"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -60,7 +59,7 @@ type SitemapEntry struct {
 }
 
 // StartSitemapGeneration initiates the sitemap crawl and generation
-func StartSitemapGeneration(cfg Config) {
+func StartSitemapGeneration(cfg Config) error {
 	sitemapURLs = sync.Map{}
 	sitemapVisited = sync.Map{}
 	sitemapConfig = cfg
@@ -78,8 +77,7 @@ func StartSitemapGeneration(cfg Config) {
 	var err error
 	sitemapBase, err = url.Parse(cfg.StartURL)
 	if err != nil {
-		fmt.Printf("❌ Invalid start URL: %v\n", err)
-		return
+		return fmt.Errorf("invalid start URL: %w", err)
 	}
 
 	fmt.Println("┌─────────────────── SITEMAP GENERATION ───────────────────┐")
@@ -102,13 +100,16 @@ func StartSitemapGeneration(cfg Config) {
 	stopStats <- true
 
 	// Generate the sitemap file
-	generateSitemapFile(cfg)
+	if err := generateSitemapFile(cfg); err != nil {
+		return err
+	}
 
 	// Print final stats
 	printSitemapFinalStats(cfg)
 	if reason := StopReason(); reason != "" {
 		fmt.Printf("\n⏹️  STOPPED EARLY: %s. The sitemap holds the pages checked so far.\n", reason)
 	}
+	return nil
 }
 
 func printSitemapLiveStats(stop chan bool) {
@@ -268,8 +269,11 @@ func fetchForSitemap(link string, includeInSitemap bool) {
 	}
 
 	// Read body - Go's http client automatically handles gzip decompression
-	bodyBytes, err := io.ReadAll(resp.Body)
+	bodyBytes, err := readResponseBody(resp, sitemapConfig.MaxBodyBytes)
 	if err != nil {
+		atomic.AddInt64(&sitemapStats.ErrorCount, 1)
+		sitemapURLs.Delete(link)
+		fmt.Printf("\n⚠️  Cannot read %s: %v\n", link, err)
 		return
 	}
 
@@ -497,7 +501,7 @@ func generatePaginationURLs(parsedURL *url.URL) []string {
 	return urls
 }
 
-func generateSitemapFile(cfg Config) {
+func generateSitemapFile(cfg Config) error {
 	fmt.Println()
 	fmt.Println()
 	fmt.Println("📝 Generating sitemap XML...")
@@ -532,8 +536,7 @@ func generateSitemapFile(cfg Config) {
 	// Marshal to XML
 	output, err := xml.MarshalIndent(urlSet, "", "  ")
 	if err != nil {
-		fmt.Printf("❌ Error generating XML: %v\n", err)
-		return
+		return fmt.Errorf("generate sitemap XML: %w", err)
 	}
 
 	// Add XML header
@@ -547,13 +550,13 @@ func generateSitemapFile(cfg Config) {
 
 	err = os.WriteFile(filename, xmlContent, 0644)
 	if err != nil {
-		fmt.Printf("❌ Error writing sitemap file: %v\n", err)
-		return
+		return fmt.Errorf("write sitemap %q: %w", filename, err)
 	}
 
 	fmt.Printf("✅ Sitemap written to: %s\n", filename)
 	fmt.Printf("   📊 Total URLs: %d\n", len(urls))
 	fmt.Printf("   📦 File size: %s\n", formatBytes(int64(len(xmlContent))))
+	return nil
 }
 
 func printSitemapFinalStats(cfg Config) {

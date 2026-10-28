@@ -72,7 +72,9 @@ func runCrawl(t *testing.T, cfg Config, pattern string) [][]string {
 	if cfg.RequestsPerSecond == 0 {
 		cfg.RequestsPerSecond = -1 // no pacing against a local server
 	}
-	Start(cfg)
+	if err := Start(cfg); err != nil {
+		t.Fatal(err)
+	}
 
 	files, _ := filepath.Glob(pattern)
 	if len(files) != 1 {

@@ -69,7 +69,10 @@ func setupBrokenLinkRun(t *testing.T) string {
 	resultFile = path
 	config = Config{Mode: ModeBrokenLinks}
 	stats = Stats{}
-	createCSV()
+	resetOutputError()
+	if err := createCSV(); err != nil {
+		t.Fatal(err)
+	}
 	return path
 }
 

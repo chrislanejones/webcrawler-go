@@ -41,7 +41,7 @@ var (
 )
 
 // StartPDFCapture begins crawling and capturing PDFs/screenshots
-func StartPDFCapture(cfg Config) {
+func StartPDFCapture(cfg Config) error {
 	pdfVisited = sync.Map{}
 	pdfStats = PDFCaptureStats{}
 	pdfStartTime = time.Now()
@@ -58,20 +58,20 @@ func StartPDFCapture(cfg Config) {
 	var err error
 	pdfBaseURL, err = url.Parse(cfg.StartURL)
 	if err != nil {
-		fmt.Printf("❌ Invalid start URL: %v\n", err)
-		return
+		return fmt.Errorf("invalid start URL: %w", err)
 	}
 
 	// Create output directory with timestamp
 	timestamp := time.Now().Format("2006-01-02_15-04-05")
 	pdfOutputDir = fmt.Sprintf("page_captures_%s", timestamp)
-	os.MkdirAll(pdfOutputDir, 0755)
+	if err := os.MkdirAll(pdfOutputDir, 0755); err != nil {
+		return fmt.Errorf("create capture folder: %w", err)
+	}
 
 	pdfSema = make(chan struct{}, cfg.MaxConcurrency)
 
 	if err := startCaptureBrowser(); err != nil {
-		fmt.Printf("❌ %v\n", err)
-		return
+		return fmt.Errorf("start capture browser: %w", err)
 	}
 	defer closeCaptureBrowser()
 
@@ -104,7 +104,11 @@ func StartPDFCapture(cfg Config) {
 
 	stopStats <- true
 	stopKeyListener <- true
+	if err := outputError(); err != nil {
+		return err
+	}
 	printPDFFinalStats()
+	return nil
 }
 
 // listenForCancel listens for 'c' key press to cancel crawling
@@ -243,6 +247,7 @@ func capturePage(pageURL string) []string {
 	// Save PDF if generated
 	if pdfCaptureFormat == CapturePDFOnly || pdfCaptureFormat == CaptureBoth {
 		if err := os.WriteFile(pdfPath, pdfBuf, 0644); err != nil {
+			failOutput(fmt.Errorf("save capture for %s: %w", pageURL, err))
 			atomic.AddInt64(&pdfStats.Errors, 1)
 			return extractedLinks
 		}
@@ -254,6 +259,7 @@ func capturePage(pageURL string) []string {
 		// First save the RGB PDF temporarily
 		tempPdfPath := filepath.Join(pdfOutputDir, filename+"_temp.pdf")
 		if err := os.WriteFile(tempPdfPath, pdfBuf, 0644); err != nil {
+			failOutput(fmt.Errorf("save capture for %s: %w", pageURL, err))
 			atomic.AddInt64(&pdfStats.Errors, 1)
 			return extractedLinks
 		}
@@ -261,6 +267,7 @@ func capturePage(pageURL string) []string {
 		// Convert to CMYK using Ghostscript
 		cmykPdfPath := filepath.Join(pdfOutputDir, filename+"_cmyk.pdf")
 		if err := convertToCMYKPDF(tempPdfPath, cmykPdfPath); err != nil {
+			failOutput(fmt.Errorf("save capture for %s: %w", pageURL, err))
 			atomic.AddInt64(&pdfStats.Errors, 1)
 			os.Remove(tempPdfPath)
 			return extractedLinks
@@ -272,6 +279,7 @@ func capturePage(pageURL string) []string {
 	// Save screenshot if generated
 	if pdfCaptureFormat == CaptureImagesOnly || pdfCaptureFormat == CaptureBoth {
 		if err := os.WriteFile(pngPath, pngBuf, 0644); err != nil {
+			failOutput(fmt.Errorf("save capture for %s: %w", pageURL, err))
 			atomic.AddInt64(&pdfStats.Errors, 1)
 			return extractedLinks
 		}
@@ -283,6 +291,7 @@ func capturePage(pageURL string) []string {
 		// First save the PNG temporarily
 		tempPngPath := filepath.Join(pdfOutputDir, filename+"_temp.png")
 		if err := os.WriteFile(tempPngPath, pngBuf, 0644); err != nil {
+			failOutput(fmt.Errorf("save capture for %s: %w", pageURL, err))
 			atomic.AddInt64(&pdfStats.Errors, 1)
 			return extractedLinks
 		}
@@ -290,6 +299,7 @@ func capturePage(pageURL string) []string {
 		// Convert to CMYK TIFF using ImageMagick
 		tiffPath := filepath.Join(pdfOutputDir, filename+"_cmyk.tiff")
 		if err := convertToCMYKTIFF(tempPngPath, tiffPath); err != nil {
+			failOutput(fmt.Errorf("save capture for %s: %w", pageURL, err))
 			atomic.AddInt64(&pdfStats.Errors, 1)
 			os.Remove(tempPngPath)
 			return extractedLinks
