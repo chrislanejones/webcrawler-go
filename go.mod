@@ -9,7 +9,7 @@ require (
 	github.com/chromedp/cdproto v0.157.8
 	github.com/chromedp/chromedp v0.20.1
 	github.com/ledongthuc/pdf v0.0.0-20260907135840-6c8c28e0e8a0
-	golang.org/x/net v0.61.0
+	golang.org/x/net v0.62.0
 )
 
 require (
